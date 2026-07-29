@@ -306,7 +306,7 @@ Include FLM/FMLM repos `david3684/{FLM-B-LM1B,FMLM-B-LM1B,FLM-B-OWT,FMLM-B-OWT}`
 
 - [ ] **Step 4: Implement resumable backends and quarantine**
 
-Download into `<file>.partial`, compute SHA256, then atomically rename. Existing mismatches move to `checkpoints/quarantine/<timestamp>/`. Google Drive folders use `gdown --folder`; Zenodo files come from its records API; HF uses `snapshot_download` with allow patterns.
+Download into `<file>.partial`, bind resumable HTTP bytes to ETag/Last-Modified with `If-Range`, compute SHA256, then atomically rename. Existing mismatches move to `checkpoints/quarantine/<timestamp>/`. Google Drive resources download every manifest-pinned file ID with `gdown --id` into ID-keyed staging; folder IDs are provenance context only. Zenodo files come from its records API; HF uses immutable `snapshot_download` allow patterns plus a required-file inventory that must include the primary weight.
 
 - [ ] **Step 5: Run tests and dry-run**
 
@@ -749,6 +749,8 @@ git commit -m "feat: standardize generation latency measurement"
 - Consumes processed datasets and teacher checkpoints
 - Produces: `load_recipe(model: str, dataset: str) -> TrainingRecipe`
 - The SDTT/Di4C wrappers must adapt teacher embeddings/output heads before loading: uniform Duo teachers need an absorbing mask state appended, while masked BERT/MDLM teachers need their existing mask state mapped into the absorbing model layout. Direct `strict=False` loading is forbidden because it still rejects tensor-shape mismatches.
+- `scripts/train/candi.sh` must implement `--source upstreams/candi --dataset <dataset> --output <path>` without delegating to site-specific Slurm scripts or hidden scratch paths.
+- `scripts/distill/duo_dcd.sh` must implement `--source upstreams/duo --dataset <dataset> --teacher <path> --output <path> --rounds 8 --steps-per-round 10000 --global-batch-size 128 --learning-rate 6e-5`; these manifest commands are pinned prerequisites and the wrappers are created only in Task 12.
 
 - [ ] **Step 1: Write paper-hyperparameter tests**
 

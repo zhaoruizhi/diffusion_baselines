@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from fnmatch import fnmatchcase
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
+import stat
 import subprocess
 from typing import Literal
 from urllib.error import HTTPError
@@ -39,11 +41,21 @@ class ManifestModel(BaseModel):
 class DigestSpec(ManifestModel):
     policy: Literal["sha256", "capture_after_download"]
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    per_file_sha256: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_policy(self) -> "DigestSpec":
-        if (self.policy == "sha256") != (self.sha256 is not None):
-            raise ValueError("sha256 policy requires one digest; capture policy forbids it")
+        for name, digest in self.per_file_sha256.items():
+            safe_remote_path(name)
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise ValueError(f"invalid per-file SHA-256 for {name}")
+        declared = (self.sha256 is not None) + bool(self.per_file_sha256)
+        if self.policy == "sha256" and declared != 1:
+            raise ValueError("sha256 policy requires one aggregate or per-file digest set")
+        if self.policy == "capture_after_download" and declared:
+            raise ValueError("capture policy forbids declared SHA-256 values")
         return self
 
 
@@ -59,9 +71,12 @@ class GDriveSource(ManifestModel):
 
     @model_validator(mode="after")
     def validate_expected_files(self) -> "GDriveSource":
+        if len(self.expected_files.values()) != len(set(self.expected_files.values())):
+            raise ValueError("Google Drive file IDs must be unique")
         for path, file_id in self.expected_files.items():
             safe_remote_path(path)
-            if not file_id or any(character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-" for character in file_id):
+            allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+            if not file_id or any(character not in allowed for character in file_id):
                 raise ValueError(f"invalid Google Drive file id for {path}")
         return self
 
@@ -104,6 +119,7 @@ class CheckpointResource(ManifestModel):
     license: str = Field(min_length=1)
     terms_url: str
     digest: DigestSpec
+    required_files: list[str] = Field(min_length=1)
     source: Source
     note: str | None = None
 
@@ -122,6 +138,33 @@ class CheckpointResource(ManifestModel):
             raise ValueError("resource destination must begin with its provenance")
         if not self.terms_url.startswith("https://"):
             raise ValueError("resource terms URL must use HTTPS")
+        if len(self.required_files) != len(set(self.required_files)):
+            raise ValueError("required checkpoint files must be unique")
+        for name in self.required_files:
+            safe_remote_path(name)
+        if isinstance(self.source, HuggingFaceSource) and any(
+            not any(fnmatchcase(name, pattern) for pattern in self.source.allow_patterns)
+            for name in self.required_files
+        ):
+            raise ValueError("required Hugging Face files must be included by allow patterns")
+        if isinstance(self.source, GDriveSource) and set(self.required_files) != set(
+            self.source.expected_files
+        ):
+            raise ValueError("Google Drive required files must exactly match pinned file IDs")
+        if isinstance(self.source, ZenodoSource) and set(self.required_files) != set(
+            self.source.files
+        ):
+            raise ValueError("Zenodo required files must exactly match selected record files")
+        if isinstance(self.source, DirectSource) and self.required_files != [
+            self.source.filename
+        ]:
+            raise ValueError("direct required file must match the declared filename")
+        if self.digest.sha256 is not None and len(self.required_files) != 1:
+            raise ValueError("aggregate SHA-256 is incompatible with a multi-file resource")
+        if self.digest.per_file_sha256 and set(self.digest.per_file_sha256) != set(
+            self.required_files
+        ):
+            raise ValueError("per-file SHA-256 inventory must match required files exactly")
         return self
 
 
@@ -264,10 +307,12 @@ def safe_remote_path(name: str) -> PurePosixPath:
 
 
 def require_server_platform(system_name: str) -> None:
-    """Refuse real checkpoint acquisition on the explicitly out-of-scope Mac."""
+    """Permit real checkpoint acquisition only on the approved Linux server."""
 
-    if system_name == "Darwin":
-        raise RuntimeError("checkpoint downloads are server-only and refused on Darwin")
+    if system_name != "Linux":
+        raise RuntimeError(
+            f"checkpoint downloads are Linux server-only; detected {system_name or 'unknown'}"
+        )
 
 
 def safe_checkpoint_destination(checkpoint_root: Path, relative_name: str) -> Path:
@@ -329,15 +374,20 @@ def build_hf_snapshot_kwargs(source: HuggingFaceSource, partial: Path) -> dict[s
     }
 
 
-def build_gdrive_command(source: GDriveSource, destination: Path) -> list[str]:
-    partial = destination.with_name(destination.name + ".partial")
+def build_gdrive_commands(source: GDriveSource, staging: Path) -> list[list[str]]:
+    """Address each Drive object by immutable file ID, never folder-discovered name."""
+
+    object_root = staging / ".objects"
     return [
-        "gdown",
-        "--folder",
-        "--continue",
-        "--output",
-        str(partial),
-        f"https://drive.google.com/drive/folders/{source.folder_id}",
+        [
+            "gdown",
+            "--continue",
+            "--id",
+            file_id,
+            "--output",
+            str(object_root / f"{file_id}.partial"),
+        ]
+        for file_id in source.expected_files.values()
     ]
 
 
@@ -420,21 +470,142 @@ def download_direct(
         raise ValueError(f"checkpoint partial path is a symlink: {partial}")
     if partial.exists() and not partial.is_file():
         raise ValueError(f"checkpoint partial path is not a file: {partial}")
-    offset = partial.stat().st_size if partial.exists() else 0
-    headers = {"Range": f"bytes={offset}-"} if offset else {}
-    request = Request(source.url, headers=headers)
-    with urlopen(request) as response:
-        status = getattr(response, "status", response.getcode())
-        mode = "ab" if offset and status == 206 else "wb"
-        with partial.open(mode) as handle:
-            shutil.copyfileobj(response, handle, length=1024 * 1024)
-            handle.flush()
-            os.fsync(handle.fileno())
+    metadata_path = partial.with_name(partial.name + ".meta.json")
+
+    def discard_partial() -> None:
+        partial.unlink(missing_ok=True)
+        metadata_path.unlink(missing_ok=True)
+
+    def load_resume_metadata() -> dict[str, object] | None:
+        if not partial.exists() or partial.stat().st_size == 0:
+            metadata_path.unlink(missing_ok=True)
+            return None
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            if metadata.get("url") != source.url:
+                raise ValueError("partial URL differs")
+            if metadata.get("validator_header") not in {"ETag", "Last-Modified"}:
+                raise ValueError("partial has no supported validator")
+            if not isinstance(metadata.get("validator_value"), str) or not metadata[
+                "validator_value"
+            ]:
+                raise ValueError("partial validator is empty")
+            total_size = metadata.get("total_size")
+            if not isinstance(total_size, int) or total_size < partial.stat().st_size:
+                raise ValueError("partial total size is invalid")
+            return metadata
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            discard_partial()
+            return None
+
+    def response_header(response, name: str) -> str | None:
+        value = response.headers.get(name)
+        if value is not None:
+            return value
+        lowered = name.lower()
+        for key, candidate in response.headers.items():
+            if key.lower() == lowered:
+                return candidate
+        return None
+
+    def content_range(response) -> tuple[int, int, int] | None:
+        value = response_header(response, "Content-Range")
+        if value is None or not value.startswith("bytes "):
+            return None
+        try:
+            span, total = value.removeprefix("bytes ").split("/", 1)
+            start, end = span.split("-", 1)
+            return int(start), int(end), int(total)
+        except (TypeError, ValueError):
+            return None
+
+    resume_metadata = load_resume_metadata()
+    for attempt in range(2):
+        offset = partial.stat().st_size if partial.exists() and resume_metadata else 0
+        headers = {}
+        if offset:
+            headers = {
+                "Range": f"bytes={offset}-",
+                "If-Range": str(resume_metadata["validator_value"]),
+            }
+        request = Request(source.url, headers=headers)
+        with urlopen(request) as response:
+            status = getattr(response, "status", response.getcode())
+            response_range = content_range(response)
+            if offset and status == 206:
+                validator_header = str(resume_metadata["validator_header"])
+                validator = response_header(response, validator_header)
+                trusted = (
+                    response_range is not None
+                    and response_range[0] == offset
+                    and response_range[1] + 1 == response_range[2]
+                    and response_range[2] == resume_metadata["total_size"]
+                    and validator == resume_metadata["validator_value"]
+                )
+                if not trusted:
+                    discard_partial()
+                    resume_metadata = None
+                    if attempt == 0:
+                        continue
+                    raise ValueError("HTTP range response could not be validated")
+                mode = "ab"
+                total_size = response_range[2]
+            elif offset and status == 200:
+                mode = "wb"
+                length = response_header(response, "Content-Length")
+                total_size = int(length) if length is not None else None
+            elif not offset and status in {200, 206}:
+                if status == 206 and (
+                    response_range is None
+                    or response_range[0] != 0
+                    or response_range[1] + 1 != response_range[2]
+                ):
+                    raise ValueError("fresh HTTP range response is incomplete")
+                mode = "wb"
+                length = response_header(response, "Content-Length")
+                total_size = (
+                    response_range[2]
+                    if response_range is not None
+                    else int(length) if length is not None else None
+                )
+            else:
+                if offset and attempt == 0:
+                    discard_partial()
+                    resume_metadata = None
+                    continue
+                raise ValueError(f"unexpected HTTP download status {status}")
+
+            etag = response_header(response, "ETag")
+            modified = response_header(response, "Last-Modified")
+            validator_header = "ETag" if etag else "Last-Modified" if modified else None
+            validator_value = etag or modified
+            if validator_header and validator_value and total_size is not None:
+                atomic_json_write(
+                    metadata_path,
+                    {
+                        "url": source.url,
+                        "validator_header": validator_header,
+                        "validator_value": validator_value,
+                        "total_size": total_size,
+                    },
+                )
+            else:
+                metadata_path.unlink(missing_ok=True)
+            with partial.open(mode) as handle:
+                shutil.copyfileobj(response, handle, length=1024 * 1024)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if total_size is not None and partial.stat().st_size != total_size:
+                raise ValueError("HTTP response size differs from validated total")
+            break
+    else:  # pragma: no cover - both attempts either break or raise
+        raise RuntimeError("HTTP download retry loop exhausted")
     verify_published_file(
         partial,
         size_bytes=published_size_bytes,
         checksum=published_checksum,
     )
+    metadata_path.unlink(missing_ok=True)
     return publish_partial(
         partial,
         target,
@@ -486,6 +657,33 @@ def _file_records(path: Path, root: Path) -> list[dict[str, object]]:
     return records
 
 
+def _verify_required_files(staging: Path, required_files: list[str]) -> None:
+    for relative_name in required_files:
+        expected = staging.joinpath(*safe_remote_path(relative_name).parts)
+        if not expected.is_file() or expected.is_symlink():
+            raise FileNotFoundError(f"required checkpoint file is missing: {relative_name}")
+
+
+def _digest_for_file(digest: DigestSpec, relative_name: str) -> DigestSpec:
+    if digest.policy == "capture_after_download":
+        return digest
+    if digest.sha256 is not None:
+        return digest
+    return DigestSpec(policy="sha256", sha256=digest.per_file_sha256[relative_name])
+
+
+def _verify_resource_digest(
+    staging: Path, digest: DigestSpec, required_files: list[str]
+) -> None:
+    if digest.policy == "capture_after_download":
+        return
+    for relative_name in required_files:
+        expected = _digest_for_file(digest, relative_name).sha256
+        path = staging.joinpath(*safe_remote_path(relative_name).parts)
+        if expected is None or sha256_file(path) != expected:
+            raise ValueError(f"download digest mismatch for {path}")
+
+
 def _publish_directory(partial: Path, destination: Path, quarantine_root: Path) -> str | None:
     if partial.is_symlink():
         raise ValueError(f"checkpoint partial path is a symlink: {partial}")
@@ -515,7 +713,12 @@ def fetch_resource(root: Path, resource: CheckpointResource) -> dict[str, object
         target = safe_checkpoint_destination(
             checkpoint_root, f"{resource.destination}/{source.filename}"
         )
-        result = download_direct(source, target, resource.digest, quarantine_root=quarantine_root)
+        result = download_direct(
+            source,
+            target,
+            _digest_for_file(resource.digest, source.filename),
+            quarantine_root=quarantine_root,
+        )
         quarantined = result.get("quarantined")
     elif resource.backend == "huggingface":
         source = resource.source
@@ -528,19 +731,43 @@ def fetch_resource(root: Path, resource: CheckpointResource) -> dict[str, object
         from huggingface_hub import snapshot_download
 
         snapshot_download(**build_hf_snapshot_kwargs(source, partial))
+        _verify_required_files(partial, resource.required_files)
+        _verify_resource_digest(partial, resource.digest, resource.required_files)
         quarantined = _publish_directory(partial, destination, quarantine_root)
     elif resource.backend == "gdrive":
         source = resource.source
         partial = safe_checkpoint_destination(
             checkpoint_root, resource.destination + ".partial"
         )
-        subprocess.run(build_gdrive_command(source, destination), check=True)
-        if not partial.is_dir():
-            raise FileNotFoundError(f"gdown did not create folder staging path {partial}")
-        for relative_name in source.expected_files:
-            expected = partial.joinpath(*safe_remote_path(relative_name).parts)
-            if not expected.is_file() or expected.is_symlink():
-                raise FileNotFoundError(f"Google Drive folder lacks expected file {relative_name}")
+        partial.mkdir(parents=True, exist_ok=True)
+        object_root = partial / ".objects"
+        object_root.mkdir(parents=True, exist_ok=True)
+        commands = build_gdrive_commands(source, partial)
+        for (relative_name, file_id), command in zip(
+            source.expected_files.items(), commands, strict=True
+        ):
+            object_path = safe_checkpoint_destination(
+                checkpoint_root,
+                f"{resource.destination}.partial/.objects/{file_id}.partial",
+            )
+            subprocess.run(command, check=True)
+            if not object_path.is_file() or object_path.is_symlink():
+                raise FileNotFoundError(f"Google Drive file ID {file_id} produced no file")
+            declared_path = safe_checkpoint_destination(
+                checkpoint_root, f"{resource.destination}.partial/{relative_name}"
+            )
+            declared_path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(object_path, declared_path)
+        object_root.rmdir()
+        _verify_required_files(partial, resource.required_files)
+        observed_inventory = {
+            item.relative_to(partial).as_posix()
+            for item in partial.rglob("*")
+            if item.is_file()
+        }
+        if observed_inventory != set(source.expected_files):
+            raise ValueError("Google Drive staging inventory differs from pinned ID/path map")
+        _verify_resource_digest(partial, resource.digest, resource.required_files)
         quarantined = _publish_directory(partial, destination, quarantine_root)
     elif resource.backend == "zenodo":
         source = resource.source
@@ -560,12 +787,13 @@ def fetch_resource(root: Path, resource: CheckpointResource) -> dict[str, object
                 safe_checkpoint_destination(
                     checkpoint_root, f"{resource.destination}/{filename}"
                 ),
-                DigestSpec(policy="capture_after_download"),
+                _digest_for_file(resource.digest, filename),
                 quarantine_root=quarantine_root,
                 published_size_bytes=int(item["size_bytes"]),
                 published_checksum=pinned_checksum or published_checksum,
             )
             quarantined = quarantined or result.get("quarantined")
+        _verify_required_files(destination, resource.required_files)
     else:  # pragma: no cover - Pydantic makes this unreachable
         raise ValueError(f"unsupported backend {resource.backend}")
     files = _file_records(destination, root)
@@ -608,13 +836,36 @@ def fetch_all_resources(root: Path, manifest_path: Path, manifest: CheckpointMan
     return lock
 
 
+def _lstat_regular_checkpoint_path(root: Path, relative: PurePosixPath) -> Path:
+    """Reject symlinks/non-directories at every component and require a regular file."""
+
+    current = root.absolute()
+    for index, part in enumerate(relative.parts):
+        current = current / part
+        info = current.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError(f"checkpoint lock path contains a symlink: {current}")
+        final = index == len(relative.parts) - 1
+        if final and not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"checkpoint lock path is not a regular file: {current}")
+        if not final and not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"checkpoint lock ancestor is not a directory: {current}")
+    return current
+
+
 def verify_checkpoint_lock(
     root: Path,
     lock: dict[str, object],
     *,
     manifest_path: Path | None = None,
 ) -> dict[str, object]:
-    report: dict[str, object] = {"ok": True, "resources": {}}
+    report: dict[str, object] = {
+        "ok": True,
+        "schema_status": "verified" if lock.get("schema_version") == 1 else "invalid",
+        "resources": {},
+    }
+    if report["schema_status"] != "verified":
+        report["ok"] = False
     resources = lock.get("resources")
     if not isinstance(resources, dict) or not resources:
         report["resource_set_status"] = "invalid"
@@ -622,6 +873,7 @@ def verify_checkpoint_lock(
         resources = resources if isinstance(resources, dict) else {}
     else:
         report["resource_set_status"] = "verified"
+    manifest = None
     if manifest_path is not None:
         expected_manifest = lock.get("manifest_sha256")
         observed_manifest = sha256_file(manifest_path) if manifest_path.is_file() else None
@@ -631,7 +883,8 @@ def verify_checkpoint_lock(
         if report["manifest_status"] != "verified":
             report["ok"] = False
         try:
-            expected_ids = set(load_checkpoint_manifest(manifest_path).resources)
+            manifest = load_checkpoint_manifest(manifest_path)
+            expected_ids = set(manifest.resources)
         except (OSError, ValueError):
             report["resource_set_status"] = "invalid"
             report["ok"] = False
@@ -640,6 +893,25 @@ def verify_checkpoint_lock(
                 report["resource_set_status"] = "mismatch"
                 report["ok"] = False
     for resource_id, record in resources.items():
+        if not isinstance(record, dict):
+            report["resources"][resource_id] = {"status": "invalid", "files": []}
+            report["ok"] = False
+            continue
+        manifest_resource = manifest.resources.get(resource_id) if manifest is not None else None
+        if manifest_resource is not None:
+            expected_metadata = {
+                "backend": manifest_resource.backend,
+                "provenance": manifest_resource.provenance,
+                "teacher_family": manifest_resource.teacher_family,
+                "destination": f"checkpoints/{manifest_resource.destination}",
+            }
+            if any(record.get(field) != value for field, value in expected_metadata.items()):
+                report["resources"][resource_id] = {
+                    "status": "invalid",
+                    "error": {"message": "lock resource metadata differs from manifest"},
+                }
+                report["ok"] = False
+                continue
         if record.get("status") not in {"downloaded", "verified"}:
             report["resources"][resource_id] = {
                 "status": record.get("status", "unavailable"),
@@ -647,31 +919,65 @@ def verify_checkpoint_lock(
             }
             report["ok"] = False
             continue
-        if not record.get("files"):
+        files = record.get("files")
+        if not isinstance(files, list) or not files:
             report["resources"][resource_id] = {"status": "invalid", "files": []}
             report["ok"] = False
             continue
         status = "verified"
         details = []
-        for expected in record.get("files", []):
+        seen_paths: set[str] = set()
+        relative_to_destination: set[str] = set()
+        destination_prefix = PurePosixPath(
+            f"checkpoints/{manifest_resource.destination}"
+            if manifest_resource is not None
+            else "checkpoints"
+        )
+        for expected in files:
             try:
+                if not isinstance(expected, dict):
+                    raise ValueError("lock file record must be a mapping")
                 relative = safe_remote_path(str(expected["path"]))
-                if relative.parts[0] != "checkpoints":
-                    raise ValueError("lock paths must remain inside checkpoints")
-                path = root.joinpath(*relative.parts)
-                path.resolve().relative_to((root / "checkpoints").resolve())
-            except (ValueError, OSError):
+                if relative == destination_prefix or not relative.is_relative_to(
+                    destination_prefix
+                ):
+                    raise ValueError("lock file lies outside its resource destination")
+                path_text = relative.as_posix()
+                if path_text in seen_paths:
+                    raise ValueError("lock contains a duplicate file path")
+                seen_paths.add(path_text)
+                size_bytes = expected["size_bytes"]
+                digest = expected["sha256"]
+                if not isinstance(size_bytes, int) or size_bytes < 0:
+                    raise ValueError("invalid locked file size")
+                if not isinstance(digest, str) or len(digest) != 64 or any(
+                    character not in "0123456789abcdef" for character in digest
+                ):
+                    raise ValueError("invalid locked SHA-256")
+                relative_to_destination.add(
+                    relative.relative_to(destination_prefix).as_posix()
+                )
+                path = _lstat_regular_checkpoint_path(root, relative)
+            except FileNotFoundError:
+                status = "missing"
+                details.append({"path": expected.get("path"), "status": "missing"})
+                continue
+            except (KeyError, TypeError, ValueError, OSError):
                 status = "invalid"
                 details.append({"path": expected.get("path"), "status": "invalid"})
                 break
-            if not path.is_file():
-                status = "missing"
-                details.append({"path": expected["path"], "status": "missing"})
-            elif path.stat().st_size != expected["size_bytes"] or sha256_file(path) != expected["sha256"]:
+            if path.stat().st_size != size_bytes or sha256_file(path) != digest:
                 status = "mismatch"
                 details.append({"path": expected["path"], "status": "mismatch"})
             else:
                 details.append({"path": expected["path"], "status": "verified"})
+        if (
+            status == "verified"
+            and manifest_resource is not None
+            and not set(manifest_resource.required_files) <= relative_to_destination
+        ):
+            status = "invalid"
+            details.append({"status": "invalid", "error": "required file missing from lock"})
         report["resources"][resource_id] = {"status": status, "files": details}
         if status != "verified":
             report["ok"] = False

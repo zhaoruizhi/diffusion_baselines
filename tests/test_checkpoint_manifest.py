@@ -8,7 +8,13 @@ import pytest
 import yaml
 from jsonschema.validators import Draft202012Validator
 
-from dlb.checkpoints import load_checkpoint_manifest, validate_checkpoint_coverage
+from dlb.checkpoints import (
+    CheckpointResource,
+    DigestSpec,
+    GDriveSource,
+    load_checkpoint_manifest,
+    validate_checkpoint_coverage,
+)
 from dlb.registry import DatasetSupport, load_registry
 
 
@@ -68,6 +74,62 @@ def test_checkpoint_sources_are_typed_and_public_resources_are_auditable(checkpo
             assert len(resource.digest.sha256) == 64
         else:
             assert resource.digest.sha256 is None
+
+
+def test_huggingface_resources_declare_required_payload_inventory(checkpoints):
+    """Catch allow filters being mistaken for proof that model weights arrived."""
+
+    for resource in checkpoints.resources.values():
+        if resource.backend != "huggingface":
+            continue
+        assert resource.required_files
+        assert "model.safetensors" in resource.required_files
+        assert set(resource.required_files) <= set(resource.source.allow_patterns)
+
+
+def test_multifile_digest_policy_is_typed_and_aggregate_sha_is_rejected():
+    """Catch directory backends silently ignoring one aggregate SHA-256."""
+
+    first = "1" * 64
+    second = "2" * 64
+    digest = DigestSpec(
+        policy="sha256",
+        per_file_sha256={"config.json": first, "model.safetensors": second},
+    )
+    assert digest.per_file_sha256 == {
+        "config.json": first,
+        "model.safetensors": second,
+    }
+
+    with pytest.raises(ValueError, match="aggregate SHA-256"):
+        CheckpointResource.model_validate(
+            {
+                "id": "bad_hf",
+                "backend": "huggingface",
+                "provenance": "official",
+                "teacher_family": "masked_mdlm",
+                "destination": "official/bad",
+                "license": "test",
+                "terms_url": "https://example.test/terms",
+                "digest": {"policy": "sha256", "sha256": first},
+                "required_files": ["config.json", "model.safetensors"],
+                "source": {
+                    "repo_id": "owner/model",
+                    "revision": "a" * 40,
+                    "allow_patterns": ["config.json", "model.safetensors"],
+                },
+            }
+        )
+
+
+def test_gdrive_path_to_file_id_inventory_is_one_to_one():
+    """Catch one mutable Drive object being relabeled as multiple declared files."""
+
+    with pytest.raises(ValueError, match="unique"):
+        GDriveSource(
+            folder_id="folder123",
+            expected_files={"model.bin": "sameID", "config.json": "sameID"},
+        )
 
 
 def test_known_primary_sources_and_immutable_hf_revisions_are_recorded(checkpoints):
@@ -182,18 +244,38 @@ def test_training_recipes_are_explicit_and_pinned(checkpoints, registry):
         recipe = checkpoints.recipes[recipe_id]
         assert len(recipe.source_commit) == 40
         assert recipe.command.strip()
-        if recipe.teacher_adapter is None:
-            assert "sources/" in recipe.command
-        else:
-            assert recipe.command.startswith("bash scripts/distill/")
+        assert recipe.command.startswith(("bash scripts/train/", "bash scripts/distill/"))
         assert recipe.output.startswith("checkpoints/")
+
+
+def test_candi_and_duo_dcd_use_project_owned_task12_wrappers(checkpoints):
+    """Catch nonexistent clone paths and upstream jobs that ignore declared outputs."""
+
+    candi = checkpoints.recipes["candi_owt"].command
+    assert candi.startswith("bash scripts/train/candi.sh")
+    assert "--source upstreams/candi" in candi
+    assert "--dataset owt" in candi
+    assert "--output checkpoints/reference_reproduction/candi/owt" in candi
+    assert "slurm" not in candi.lower()
+
+    dcd = checkpoints.recipes["duo_dcd_lm1b"].command
+    assert dcd.startswith("bash scripts/distill/duo_dcd.sh")
+    assert "--source upstreams/duo" in dcd
+    assert "--dataset lm1b" in dcd
+    assert "--teacher checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_Duo.ckpt" in dcd
+    assert "--output checkpoints/reference_reproduction/duo_dcd/lm1b" in dcd
+    assert "--rounds 8" in dcd
+    assert "--steps-per-round 10000" in dcd
+    assert "--global-batch-size 128" in dcd
+    assert "--learning-rate 6e-5" in dcd
 
 
 def test_distillation_recipes_pin_the_declared_teacher_family(checkpoints):
     """Catch recipes falling back to default MDLM teachers or non-Di4C training."""
 
     dcd = checkpoints.recipes["duo_dcd_lm1b"].command
-    assert "training.finetune_path=" in dcd
+    assert dcd.startswith("bash scripts/distill/duo_dcd.sh")
+    assert "--teacher " in dcd
     assert "lm1b_Duo.ckpt" in dcd
 
     for recipe_id in ("duo_di4c_lm1b", "duo_di4c_owt"):
@@ -230,7 +312,7 @@ def test_distillation_recipes_pin_the_declared_teacher_family(checkpoints):
     ):
         command = checkpoints.recipes[recipe_id].command
         assert "lm1b" in command
-        assert "checkpointing.save_dir=" in command or "--output " in command
+        assert "--output " in command
 
 
 def test_train_recipe_is_typed_and_forbidden_on_unsupported_cells():

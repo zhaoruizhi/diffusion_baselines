@@ -9,6 +9,7 @@ resources:
     license: apache-2.0
     terms_url: https://huggingface.co/david3684/FLM-B-LM1B
     digest: {policy: capture_after_download}
+    required_files: [config.json, model.safetensors]
     source:
       repo_id: david3684/FLM-B-LM1B
       revision: cd0ca433d11d9392494de8122f3b63cc996fd4ce
@@ -22,6 +23,7 @@ resources:
     license: apache-2.0
     terms_url: https://huggingface.co/david3684/FMLM-B-LM1B
     digest: {policy: capture_after_download}
+    required_files: [config.json, model.safetensors]
     source:
       repo_id: david3684/FMLM-B-LM1B
       revision: 356592ce2d9af4adbf9d7b55e8e00bbfb37eb4c8
@@ -35,6 +37,7 @@ resources:
     license: apache-2.0
     terms_url: https://huggingface.co/david3684/FLM-B-OWT
     digest: {policy: capture_after_download}
+    required_files: [config.json, model.safetensors]
     source:
       repo_id: david3684/FLM-B-OWT
       revision: 624471b934fdd0421757d62290f7e639f32566d3
@@ -48,6 +51,7 @@ resources:
     license: apache-2.0
     terms_url: https://huggingface.co/david3684/FMLM-B-OWT
     digest: {policy: capture_after_download}
+    required_files: [config.json, model.safetensors]
     source:
       repo_id: david3684/FMLM-B-OWT
       revision: 483ea1b38bba56632cd40dc5a3c70a2340bb4946
@@ -61,6 +65,7 @@ resources:
     license: apache-2.0
     terms_url: https://huggingface.co/Continuous-Rivals-Discrete/langflow-owt
     digest: {policy: capture_after_download}
+    required_files: [config.json, config.py, model.py, model.safetensors]
     source:
       repo_id: Continuous-Rivals-Discrete/langflow-owt
       revision: a08f933dd337d52762fec5ef7d60c131896cc341
@@ -74,6 +79,7 @@ resources:
     license: apache-2.0
     terms_url: https://huggingface.co/s-sahoo/duo
     digest: {policy: capture_after_download}
+    required_files: [config.json, config.py, model.py, model.safetensors]
     source:
       repo_id: s-sahoo/duo
       revision: ef8ad7a25a4bf9624306230913dd7ae5cb2a00bd
@@ -87,6 +93,7 @@ resources:
     license: apache-2.0
     terms_url: https://huggingface.co/s-sahoo/duo-distilled
     digest: {policy: capture_after_download}
+    required_files: [config.json, config.py, model.py, model.safetensors]
     source:
       repo_id: s-sahoo/duo-distilled
       revision: 08ee71faabfc0e2eaaa6cb1833ed3a486931ef2b
@@ -100,6 +107,7 @@ resources:
     license: apache-2.0
     terms_url: https://huggingface.co/kuleshov-group/mdlm-owt
     digest: {policy: capture_after_download}
+    required_files: [config.json, configuration_mdlm.py, modeling_mdlm.py, model.safetensors]
     source:
       repo_id: kuleshov-group/mdlm-owt
       revision: d0958fa851335ece6c15260ce0025f030673c0fb
@@ -113,6 +121,7 @@ resources:
     license: apache-2.0
     terms_url: https://huggingface.co/jdeschena/sdtt/tree/baselines_kld_step_70000
     digest: {policy: capture_after_download}
+    required_files: [config.json, model.safetensors]
     source:
       repo_id: jdeschena/sdtt
       revision: c84bdf45ce3a80f5a70bb09548093f1c8f2ac7a7
@@ -127,6 +136,7 @@ resources:
     license: upstream-not-specified
     terms_url: https://github.com/david3684/flm/blob/a1918d5164e5038e37d0b7a4fb2010ce75b863b3/README.md
     digest: {policy: capture_after_download}
+    required_files: [lm1b_CANDI.ckpt, lm1b_Duo.ckpt, lm1b_MDLM_.ckpt]
     source:
       folder_id: 1TJO3aFWqI7ukbmjciZ6krAUFlAak1itl
       expected_files:
@@ -143,6 +153,7 @@ resources:
     license: apache-2.0-code-checkpoint-terms-upstream
     terms_url: https://github.com/s-sahoo/duo/blob/7c9b498f5b717de064d6fad7e2509c866e6cb620/README.md
     digest: {policy: capture_after_download}
+    required_files: [duo-distilled.ckpt, duo.ckpt]
     source:
       folder_id: 1JpqFM8XRvifwIkjWPfMyuDvu41r1yk0t
       expected_files:
@@ -158,6 +169,13 @@ resources:
     license: upstream-not-specified
     terms_url: https://github.com/harryjo97/RDLM/blob/67443aa6a2d0fa981eb7c6105f9cbc563e59c5c1/README.md
     digest: {policy: capture_after_download}
+    required_files:
+      - LM1B/checkpoint.pth
+      - LM1B/config.yaml
+      - LM1B/sde.pkl
+      - Text8/checkpoint.pth
+      - Text8/config.yaml
+      - Text8/sde.pkl
     source:
       folder_id: 1aDTZtPIxAxQrkaRSahjuWbkxX1OYq9CC
       expected_files:
@@ -177,6 +195,7 @@ resources:
     license: zenodo-record-terms
     terms_url: https://zenodo.org/records/15124163
     digest: {policy: capture_after_download}
+    required_files: [sdtt7-di4c2.ckpt]
     source:
       record_id: 15124163
       files: [sdtt7-di4c2.ckpt]
@@ -191,9 +210,11 @@ recipes:
     teacher_family: hybrid_candi
     source: candi
     source_commit: cd57ae9eec98d6ac71cd52bdc50eeec8dfd70f91
-    command: cd sources/candi && bash scripts/slurm_scripts/owt_job_candi_fullrun.sh
+    command: >-
+      bash scripts/train/candi.sh --source upstreams/candi --dataset owt
+      --output checkpoints/reference_reproduction/candi/owt
     output: checkpoints/reference_reproduction/candi/owt
-    note: No public CANDI weights are released; use the upstream full OWT training job.
+    note: Explicit prerequisite for the project-owned Task 12 wrapper; the upstream site-specific Slurm job is not invoked directly.
   duo_dcd_lm1b:
     model: duo_dcd
     dataset: lm1b
@@ -202,13 +223,14 @@ recipes:
     source: duo
     source_commit: 7c9b498f5b717de064d6fad7e2509c866e6cb620
     command: >-
-      cd sources/duo && python -m main mode=train data=lm1b model=small
-      model.length=128 algo=distillation
-      training.finetune_path=../../checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_Duo.ckpt
-      checkpointing.save_dir=../../checkpoints/reference_reproduction/duo_dcd/lm1b
+      bash scripts/distill/duo_dcd.sh --source upstreams/duo --dataset lm1b
+      --teacher checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_Duo.ckpt
+      --output checkpoints/reference_reproduction/duo_dcd/lm1b
+      --rounds 8 --steps-per-round 10000 --global-batch-size 128
+      --learning-rate 6e-5
     output: checkpoints/reference_reproduction/duo_dcd/lm1b
     prerequisites: [flm_lm1b_reproductions]
-    note: Teacher-family-specific LM1B DCD; do not substitute the OWT distilled snapshot.
+    note: Explicit prerequisite for the project-owned Task 12 wrapper; do not substitute the OWT distilled snapshot or alter the reference schedule.
   duo_di4c_lm1b:
     model: duo_di4c
     dataset: lm1b
