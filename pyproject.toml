@@ -23,6 +23,10 @@ data = [
     "pyarrow>=20,<22",
     "transformers>=4.53,<5",
 ]
+checkpoints = [
+    "gdown>=6,<7",
+    "huggingface_hub>=0.33,<1",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

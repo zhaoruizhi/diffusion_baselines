@@ -37,14 +37,22 @@ class DatasetSupport(RegistryModel):
     status: SupportStatus
     provenance: Provenance | None = None
     reason: str | None = None
+    train_recipe: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]*$")
 
     @model_validator(mode="after")
     def validate_support_details(self) -> "DatasetSupport":
         if self.status == "supported":
             if self.provenance is None or self.reason is not None:
                 raise ValueError("supported datasets require provenance and no reason")
-        elif self.reason is None or self.reason.strip() == "" or self.provenance is not None:
-            raise ValueError("unsupported datasets require a reason and no provenance")
+        elif (
+            self.reason is None
+            or self.reason.strip() == ""
+            or self.provenance is not None
+            or self.train_recipe is not None
+        ):
+            raise ValueError(
+                "unsupported datasets require a reason and no provenance or train recipe"
+            )
         return self
 
 

@@ -1,0 +1,293 @@
+schema_version: 1
+resources:
+  flm_lm1b_hf:
+    id: flm_lm1b_hf
+    backend: huggingface
+    provenance: official
+    teacher_family: continuous_flm
+    destination: official/flm/lm1b
+    license: apache-2.0
+    terms_url: https://huggingface.co/david3684/FLM-B-LM1B
+    digest: {policy: capture_after_download}
+    source:
+      repo_id: david3684/FLM-B-LM1B
+      revision: cd0ca433d11d9392494de8122f3b63cc996fd4ce
+      allow_patterns: [README.md, config.json, model.safetensors]
+  fmlm_lm1b_hf:
+    id: fmlm_lm1b_hf
+    backend: huggingface
+    provenance: official
+    teacher_family: continuous_flm
+    destination: official/fmlm/lm1b
+    license: apache-2.0
+    terms_url: https://huggingface.co/david3684/FMLM-B-LM1B
+    digest: {policy: capture_after_download}
+    source:
+      repo_id: david3684/FMLM-B-LM1B
+      revision: 356592ce2d9af4adbf9d7b55e8e00bbfb37eb4c8
+      allow_patterns: [README.md, config.json, model.safetensors]
+  flm_owt_hf:
+    id: flm_owt_hf
+    backend: huggingface
+    provenance: official
+    teacher_family: continuous_flm
+    destination: official/flm/owt
+    license: apache-2.0
+    terms_url: https://huggingface.co/david3684/FLM-B-OWT
+    digest: {policy: capture_after_download}
+    source:
+      repo_id: david3684/FLM-B-OWT
+      revision: 624471b934fdd0421757d62290f7e639f32566d3
+      allow_patterns: [README.md, config.json, model.safetensors]
+  fmlm_owt_hf:
+    id: fmlm_owt_hf
+    backend: huggingface
+    provenance: official
+    teacher_family: continuous_flm
+    destination: official/fmlm/owt
+    license: apache-2.0
+    terms_url: https://huggingface.co/david3684/FMLM-B-OWT
+    digest: {policy: capture_after_download}
+    source:
+      repo_id: david3684/FMLM-B-OWT
+      revision: 483ea1b38bba56632cd40dc5a3c70a2340bb4946
+      allow_patterns: [README.md, config.json, model.safetensors]
+  langflow_owt_hf:
+    id: langflow_owt_hf
+    backend: huggingface
+    provenance: official
+    teacher_family: continuous_langflow
+    destination: official/langflow/owt
+    license: apache-2.0
+    terms_url: https://huggingface.co/Continuous-Rivals-Discrete/langflow-owt
+    digest: {policy: capture_after_download}
+    source:
+      repo_id: Continuous-Rivals-Discrete/langflow-owt
+      revision: a08f933dd337d52762fec5ef7d60c131896cc341
+      allow_patterns: [README.md, __init__.py, config.json, config.py, model.py, model.safetensors]
+  duo_owt_hf:
+    id: duo_owt_hf
+    backend: huggingface
+    provenance: official
+    teacher_family: uniform_duo
+    destination: official/duo/owt
+    license: apache-2.0
+    terms_url: https://huggingface.co/s-sahoo/duo
+    digest: {policy: capture_after_download}
+    source:
+      repo_id: s-sahoo/duo
+      revision: ef8ad7a25a4bf9624306230913dd7ae5cb2a00bd
+      allow_patterns: [README.md, config.json, config.py, model.py, model.safetensors]
+  duo_dcd_owt_hf:
+    id: duo_dcd_owt_hf
+    backend: huggingface
+    provenance: official
+    teacher_family: uniform_duo
+    destination: official/duo_dcd/owt
+    license: apache-2.0
+    terms_url: https://huggingface.co/s-sahoo/duo-distilled
+    digest: {policy: capture_after_download}
+    source:
+      repo_id: s-sahoo/duo-distilled
+      revision: 08ee71faabfc0e2eaaa6cb1833ed3a486931ef2b
+      allow_patterns: [README.md, config.json, config.py, model.py, model.safetensors]
+  mdlm_owt_hf:
+    id: mdlm_owt_hf
+    backend: huggingface
+    provenance: official
+    teacher_family: masked_mdlm
+    destination: official/mdlm/owt
+    license: apache-2.0
+    terms_url: https://huggingface.co/kuleshov-group/mdlm-owt
+    digest: {policy: capture_after_download}
+    source:
+      repo_id: kuleshov-group/mdlm-owt
+      revision: d0958fa851335ece6c15260ce0025f030673c0fb
+      allow_patterns: [README.md, config.json, configuration_mdlm.py, modeling_mdlm.py, model.safetensors]
+  sdtt_owt_hf:
+    id: sdtt_owt_hf
+    backend: huggingface
+    provenance: official
+    teacher_family: masked_mdlm
+    destination: official/mdlm_sdtt/owt
+    license: apache-2.0
+    terms_url: https://huggingface.co/jdeschena/sdtt/tree/baselines_kld_step_70000
+    digest: {policy: capture_after_download}
+    source:
+      repo_id: jdeschena/sdtt
+      revision: c84bdf45ce3a80f5a70bb09548093f1c8f2ac7a7
+      allow_patterns: [config.json, model.safetensors]
+    note: Final round-7 KLD baseline student from the masked MDLM teacher.
+  flm_lm1b_reproductions:
+    id: flm_lm1b_reproductions
+    backend: gdrive
+    provenance: reference_reproduction
+    teacher_family: mixed_baselines
+    destination: reference_reproduction/flm_baselines/lm1b
+    license: upstream-not-specified
+    terms_url: https://github.com/david3684/flm/blob/a1918d5164e5038e37d0b7a4fb2010ce75b863b3/README.md
+    digest: {policy: capture_after_download}
+    source:
+      folder_id: 1TJO3aFWqI7ukbmjciZ6krAUFlAak1itl
+      expected_files:
+        lm1b_CANDI.ckpt: 19TbJu1VHWX5EHqE8Si4xWqBhJlTqaGjf
+        lm1b_Duo.ckpt: 1yHtaYrLX34rS5tu9V1SKF5NvwTVxPWoF
+        lm1b_MDLM_.ckpt: 1jp6Jka8tQJJ9zljihdLErokFp9TDvlsl
+    note: Supplemental reproduction folder; cells remain recipe-backed until server lock inspection proves exact filenames and teacher families.
+  duo_raw_owt_drive:
+    id: duo_raw_owt_drive
+    backend: gdrive
+    provenance: official
+    teacher_family: uniform_duo
+    destination: official/duo/raw_owt
+    license: apache-2.0-code-checkpoint-terms-upstream
+    terms_url: https://github.com/s-sahoo/duo/blob/7c9b498f5b717de064d6fad7e2509c866e6cb620/README.md
+    digest: {policy: capture_after_download}
+    source:
+      folder_id: 1JpqFM8XRvifwIkjWPfMyuDvu41r1yk0t
+      expected_files:
+        duo-distilled.ckpt: 1WaF4ITJ24rl6JhIYKfrA4FWvXaAPZjJL
+        duo.ckpt: 1SbslPVBrSWrN3V3TlngjcLapROa74o0_
+    note: Official finetunable raw OWT checkpoint folder; HF snapshots remain canonical for evaluation.
+  rdlm_lm1b_drive:
+    id: rdlm_lm1b_drive
+    backend: gdrive
+    provenance: official
+    teacher_family: continuous_rdlm
+    destination: official/rdlm/lm1b
+    license: upstream-not-specified
+    terms_url: https://github.com/harryjo97/RDLM/blob/67443aa6a2d0fa981eb7c6105f9cbc563e59c5c1/README.md
+    digest: {policy: capture_after_download}
+    source:
+      folder_id: 1aDTZtPIxAxQrkaRSahjuWbkxX1OYq9CC
+      expected_files:
+        LM1B/checkpoint.pth: 1zAqP-DtZigoiChpNfgJgJobKIZ9VOaro
+        LM1B/config.yaml: 1-rXPglhh3BqDQ0XlQqQ0wN8Gu2iNg5KU
+        LM1B/sde.pkl: 1I2yLxRSOk4jlBryFhwOfJ6L3UBmljwl_
+        Text8/checkpoint.pth: 17x9jd44hfUuhByh9XsZEeClwSnsCNQIY
+        Text8/config.yaml: 158JPIYFGm5cBRlQ2ZmY__9t4UYl9-CQl
+        Text8/sde.pkl: 1M3mzJFCOnXsQF9MKfrUGcn8sAbKtaLBh
+    note: Folder also contains Text8; server lock records the observed LM1B checkpoint, config, and SDE files.
+  di4c_mdlm_owt_zenodo:
+    id: di4c_mdlm_owt_zenodo
+    backend: zenodo
+    provenance: official
+    teacher_family: masked_mdlm
+    destination: official/mdlm_di4c/owt
+    license: zenodo-record-terms
+    terms_url: https://zenodo.org/records/15124163
+    digest: {policy: capture_after_download}
+    source:
+      record_id: 15124163
+      files: [sdtt7-di4c2.ckpt]
+      published_checksums:
+        sdtt7-di4c2.ckpt: md5:b55b961b1f0d7f2ed55539452875ec15
+    note: Masked SDTT/MDLM teacher release only; never valid for Duo/uniform Di4C cells.
+recipes:
+  candi_owt:
+    model: candi
+    dataset: owt
+    provenance: reference_reproduction
+    teacher_family: hybrid_candi
+    source: candi
+    source_commit: cd57ae9eec98d6ac71cd52bdc50eeec8dfd70f91
+    command: cd sources/candi && bash scripts/slurm_scripts/owt_job_candi_fullrun.sh
+    output: checkpoints/reference_reproduction/candi/owt
+    note: No public CANDI weights are released; use the upstream full OWT training job.
+  duo_dcd_lm1b:
+    model: duo_dcd
+    dataset: lm1b
+    provenance: reference_reproduction
+    teacher_family: uniform_duo
+    source: duo
+    source_commit: 7c9b498f5b717de064d6fad7e2509c866e6cb620
+    command: >-
+      cd sources/duo && python -m main mode=train data=lm1b model=small
+      model.length=128 algo=distillation
+      training.finetune_path=../../checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_Duo.ckpt
+      checkpointing.save_dir=../../checkpoints/reference_reproduction/duo_dcd/lm1b
+    output: checkpoints/reference_reproduction/duo_dcd/lm1b
+    prerequisites: [flm_lm1b_reproductions]
+    note: Teacher-family-specific LM1B DCD; do not substitute the OWT distilled snapshot.
+  duo_di4c_lm1b:
+    model: duo_di4c
+    dataset: lm1b
+    provenance: reference_reproduction
+    teacher_family: uniform_duo
+    source: di4c
+    source_commit: ac61ff9fe8e85120f9e1d2a8c5a332f8b8353dd3
+    teacher_adapter: uniform_to_absorbing
+    command: >-
+      bash scripts/distill/di4c.sh --model duo_di4c --dataset lm1b
+      --teacher-family uniform_duo
+      --teacher-checkpoint checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_Duo.ckpt
+      --output checkpoints/reference_reproduction/duo_di4c/lm1b
+      --upstream-override is_di4c=true
+    output: checkpoints/reference_reproduction/duo_di4c/lm1b
+    prerequisites: [flm_lm1b_reproductions]
+    note: Task 12's repository wrapper must adapt the uniform Duo vocabulary/head to the absorbing Di4C shape; Zenodo SDTT files are forbidden substitutes.
+  duo_di4c_owt:
+    model: duo_di4c
+    dataset: owt
+    provenance: reference_reproduction
+    teacher_family: uniform_duo
+    source: di4c
+    source_commit: ac61ff9fe8e85120f9e1d2a8c5a332f8b8353dd3
+    teacher_adapter: uniform_to_absorbing
+    command: >-
+      bash scripts/distill/di4c.sh --model duo_di4c --dataset owt
+      --teacher-family uniform_duo
+      --teacher-checkpoint checkpoints/official/duo/raw_owt/duo.ckpt
+      --output checkpoints/reference_reproduction/duo_di4c/owt
+      --upstream-override is_di4c=true
+    output: checkpoints/reference_reproduction/duo_di4c/owt
+    prerequisites: [duo_raw_owt_drive]
+    note: Task 12's repository wrapper must adapt the uniform Duo vocabulary/head to the absorbing Di4C shape; never relabel the masked-teacher Zenodo checkpoint.
+  mdlm_sdtt_lm1b:
+    model: mdlm_sdtt
+    dataset: lm1b
+    provenance: reference_reproduction
+    teacher_family: masked_mdlm
+    source: sdtt
+    source_commit: 1150985e90b8f2d5749e4469d5154eff9ec922c4
+    teacher_adapter: masked_to_absorbing
+    command: >-
+      bash scripts/distill/mdlm_sdtt.sh --model mdlm_sdtt --dataset lm1b
+      --teacher-family masked_mdlm
+      --teacher-checkpoint checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_MDLM_.ckpt
+      --output checkpoints/reference_reproduction/mdlm_sdtt/lm1b
+    output: checkpoints/reference_reproduction/mdlm_sdtt/lm1b
+    prerequisites: [flm_lm1b_reproductions]
+    note: Task 12's repository wrapper must adapt the BERT masked teacher to the absorbing SDTT shape; the upstream loader is not shape-compatible directly.
+  mdlm_di4c_lm1b:
+    model: mdlm_di4c
+    dataset: lm1b
+    provenance: reference_reproduction
+    teacher_family: masked_mdlm
+    source: di4c
+    source_commit: ac61ff9fe8e85120f9e1d2a8c5a332f8b8353dd3
+    teacher_adapter: masked_to_absorbing
+    command: >-
+      bash scripts/distill/di4c.sh --model mdlm_di4c --dataset lm1b
+      --teacher-family masked_mdlm
+      --teacher-checkpoint checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_MDLM_.ckpt
+      --output checkpoints/reference_reproduction/mdlm_di4c/lm1b
+      --upstream-override is_di4c=true
+    output: checkpoints/reference_reproduction/mdlm_di4c/lm1b
+    prerequisites: [flm_lm1b_reproductions]
+    note: Task 12's repository wrapper must adapt the BERT masked teacher to the absorbing Di4C shape; Zenodo contains OWT students only.
+coverage:
+  - {model: flm, dataset: lm1b, resource: flm_lm1b_hf}
+  - {model: flm, dataset: owt, resource: flm_owt_hf}
+  - {model: fmlm, dataset: lm1b, resource: fmlm_lm1b_hf}
+  - {model: fmlm, dataset: owt, resource: fmlm_owt_hf}
+  - {model: langflow, dataset: owt, resource: langflow_owt_hf}
+  - {model: duo, dataset: lm1b, resource: flm_lm1b_reproductions, path: lm1b_Duo.ckpt, teacher_family: uniform_duo}
+  - {model: duo, dataset: owt, resource: duo_owt_hf}
+  - {model: duo_dcd, dataset: owt, resource: duo_dcd_owt_hf}
+  - {model: mdlm, dataset: lm1b, resource: flm_lm1b_reproductions, path: lm1b_MDLM_.ckpt, teacher_family: masked_mdlm}
+  - {model: mdlm, dataset: owt, resource: mdlm_owt_hf}
+  - {model: candi, dataset: lm1b, resource: flm_lm1b_reproductions, path: lm1b_CANDI.ckpt, teacher_family: hybrid_candi}
+  - {model: rdlm, dataset: lm1b, resource: rdlm_lm1b_drive}
+  - {model: mdlm_sdtt, dataset: owt, resource: sdtt_owt_hf}
+  - {model: mdlm_di4c, dataset: owt, resource: di4c_mdlm_owt_zenodo}

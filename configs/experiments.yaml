@@ -43,7 +43,7 @@ models:
     source: candi
     datasets:
       lm1b: {status: supported, provenance: reference_reproduction}
-      owt: {status: supported, provenance: reference_reproduction}
+      owt: {status: supported, provenance: reference_reproduction, train_recipe: candi_owt}
   rdlm:
     category: many
     environment: dlb-rdlm
@@ -68,7 +68,7 @@ models:
     adapter: duo
     source: duo
     datasets:
-      lm1b: {status: supported, provenance: reference_reproduction}
+      lm1b: {status: supported, provenance: reference_reproduction, train_recipe: duo_dcd_lm1b}
       owt: {status: supported, provenance: official}
   duo_di4c:
     category: few
@@ -76,15 +76,15 @@ models:
     adapter: di4c
     source: di4c
     datasets:
-      lm1b: {status: supported, provenance: reference_reproduction}
-      owt: {status: supported, provenance: reference_reproduction}
+      lm1b: {status: supported, provenance: reference_reproduction, train_recipe: duo_di4c_lm1b}
+      owt: {status: supported, provenance: reference_reproduction, train_recipe: duo_di4c_owt}
   mdlm_sdtt:
     category: few
     environment: dlb-sdtt
     adapter: sdtt
     source: sdtt
     datasets:
-      lm1b: {status: supported, provenance: reference_reproduction}
+      lm1b: {status: supported, provenance: reference_reproduction, train_recipe: mdlm_sdtt_lm1b}
       owt: {status: supported, provenance: official}
   mdlm_di4c:
     category: few
@@ -92,5 +92,5 @@ models:
     adapter: di4c
     source: di4c
     datasets:
-      lm1b: {status: supported, provenance: reference_reproduction}
+      lm1b: {status: supported, provenance: reference_reproduction, train_recipe: mdlm_di4c_lm1b}
       owt: {status: supported, provenance: official}

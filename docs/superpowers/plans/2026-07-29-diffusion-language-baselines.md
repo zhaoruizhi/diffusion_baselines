@@ -315,7 +315,10 @@ Expected: PASS.
 Run: `python scripts/fetch_checkpoints.py --root . --dry-run`
 Expected: each downloadable artifact lists backend, destination and provenance.
 
-- [ ] **Step 6: Download public checkpoints locally and verify**
+- [ ] **Step 6: SERVER-ONLY acceptance — download public checkpoints and verify**
+
+Do not run these commands on the local Mac. After cloning the committed project
+on the Linux GPU/server, run:
 
 Run: `python scripts/fetch_checkpoints.py --root . --all-public`
 Run: `python scripts/verify_checkpoints.py --root .`
@@ -745,6 +748,7 @@ git commit -m "feat: standardize generation latency measurement"
 - Produces self-trained checkpoints in `checkpoints/self_trained/<dataset>/<model>/`
 - Consumes processed datasets and teacher checkpoints
 - Produces: `load_recipe(model: str, dataset: str) -> TrainingRecipe`
+- The SDTT/Di4C wrappers must adapt teacher embeddings/output heads before loading: uniform Duo teachers need an absorbing mask state appended, while masked BERT/MDLM teachers need their existing mask state mapped into the absorbing model layout. Direct `strict=False` loading is forbidden because it still rejects tensor-shape mismatches.
 
 - [ ] **Step 1: Write paper-hyperparameter tests**
 
