@@ -16,7 +16,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dlb.io import atomic_json_write, sha256_file
 
@@ -221,6 +221,13 @@ class CheckpointManifest(ManifestModel):
     resources: dict[str, CheckpointResource]
     recipes: dict[str, TrainingRecipe]
     coverage_entries: list[CoverageEntry] = Field(alias="coverage")
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def validate_schema_version(cls, value: object) -> object:
+        if type(value) is not int or value != 1:
+            raise ValueError("checkpoint manifest schema_version must be integer 1")
+        return value
 
     @property
     def coverage(self) -> dict[tuple[str, str], CoverageEntry]:
@@ -522,16 +529,51 @@ def download_direct(
     resume_metadata = load_resume_metadata()
     for attempt in range(2):
         offset = partial.stat().st_size if partial.exists() and resume_metadata else 0
+        complete_partial = bool(
+            offset and offset == resume_metadata.get("total_size")
+        )
         headers = {}
         if offset:
             headers = {
-                "Range": f"bytes={offset}-",
+                "Range": "bytes=0-0" if complete_partial else f"bytes={offset}-",
                 "If-Range": str(resume_metadata["validator_value"]),
             }
         request = Request(source.url, headers=headers)
-        with urlopen(request) as response:
+        try:
+            response_context = urlopen(request)
+        except HTTPError as error:
+            if error.code == 416 and offset and attempt == 0:
+                discard_partial()
+                resume_metadata = None
+                continue
+            raise
+        with response_context as response:
             status = getattr(response, "status", response.getcode())
             response_range = content_range(response)
+            if offset and status == 416:
+                discard_partial()
+                resume_metadata = None
+                if attempt == 0:
+                    continue
+                raise ValueError("HTTP range remained unsatisfiable after restart")
+            if complete_partial and status == 206:
+                validator_header = str(resume_metadata["validator_header"])
+                validator = response_header(response, validator_header)
+                probe = response.read()
+                with partial.open("rb") as handle:
+                    first_byte = handle.read(1)
+                trusted = (
+                    response_range == (0, 0, resume_metadata["total_size"])
+                    and validator == resume_metadata["validator_value"]
+                    and probe == first_byte
+                )
+                if trusted:
+                    break
+                discard_partial()
+                resume_metadata = None
+                if attempt == 0:
+                    continue
+                raise ValueError("complete HTTP partial could not be revalidated")
             if offset and status == 206:
                 validator_header = str(resume_metadata["validator_header"])
                 validator = response_header(response, validator_header)
@@ -600,6 +642,8 @@ def download_direct(
             break
     else:  # pragma: no cover - both attempts either break or raise
         raise RuntimeError("HTTP download retry loop exhausted")
+    if partial.stat().st_size == 0:
+        raise FileNotFoundError(f"required checkpoint file is empty: {source.filename}")
     verify_published_file(
         partial,
         size_bytes=published_size_bytes,
@@ -662,6 +706,8 @@ def _verify_required_files(staging: Path, required_files: list[str]) -> None:
         expected = staging.joinpath(*safe_remote_path(relative_name).parts)
         if not expected.is_file() or expected.is_symlink():
             raise FileNotFoundError(f"required checkpoint file is missing: {relative_name}")
+        if expected.stat().st_size == 0:
+            raise FileNotFoundError(f"required checkpoint file is empty: {relative_name}")
 
 
 def _digest_for_file(digest: DigestSpec, relative_name: str) -> DigestSpec:
@@ -682,6 +728,40 @@ def _verify_resource_digest(
         path = staging.joinpath(*safe_remote_path(relative_name).parts)
         if expected is None or sha256_file(path) != expected:
             raise ValueError(f"download digest mismatch for {path}")
+
+
+def _quarantine_unexpected_gdrive_staging(
+    partial: Path,
+    source: GDriveSource,
+    quarantine_root: Path,
+) -> list[str]:
+    allowed_files = set(source.expected_files)
+    allowed_files.update(
+        f".objects/{file_id}.partial" for file_id in source.expected_files.values()
+    )
+    allowed_directories = {".objects"}
+    for name in allowed_files:
+        relative = PurePosixPath(name)
+        allowed_directories.update(
+            parent.as_posix() for parent in relative.parents if parent.as_posix() != "."
+        )
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    quarantined = []
+    for item in sorted(
+        partial.rglob("*"), key=lambda path: len(path.parts), reverse=True
+    ):
+        relative_name = item.relative_to(partial).as_posix()
+        if item.is_symlink() or not item.is_dir():
+            if relative_name not in allowed_files:
+                quarantine = _quarantine_path(item, quarantine_root, stamp)
+                os.replace(item, quarantine)
+                quarantined.append(quarantine.as_posix())
+        elif relative_name not in allowed_directories:
+            try:
+                item.rmdir()
+            except OSError:
+                pass
+    return quarantined
 
 
 def _publish_directory(partial: Path, destination: Path, quarantine_root: Path) -> str | None:
@@ -740,6 +820,7 @@ def fetch_resource(root: Path, resource: CheckpointResource) -> dict[str, object
             checkpoint_root, resource.destination + ".partial"
         )
         partial.mkdir(parents=True, exist_ok=True)
+        _quarantine_unexpected_gdrive_staging(partial, source, quarantine_root)
         object_root = partial / ".objects"
         object_root.mkdir(parents=True, exist_ok=True)
         commands = build_gdrive_commands(source, partial)
@@ -861,7 +942,11 @@ def verify_checkpoint_lock(
 ) -> dict[str, object]:
     report: dict[str, object] = {
         "ok": True,
-        "schema_status": "verified" if lock.get("schema_version") == 1 else "invalid",
+        "schema_status": (
+            "verified"
+            if type(lock.get("schema_version")) is int and lock.get("schema_version") == 1
+            else "invalid"
+        ),
         "resources": {},
     }
     if report["schema_status"] != "verified":
@@ -894,7 +979,14 @@ def verify_checkpoint_lock(
                 report["ok"] = False
     for resource_id, record in resources.items():
         if not isinstance(record, dict):
-            report["resources"][resource_id] = {"status": "invalid", "files": []}
+            report["resources"][resource_id] = {
+                "status": "invalid",
+                "files": [],
+                "error": {
+                    "type": "InvalidResourceRecord",
+                    "message": f"lock resource {resource_id} must be a mapping",
+                },
+            }
             report["ok"] = False
             continue
         manifest_resource = manifest.resources.get(resource_id) if manifest is not None else None

@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import threading
 import types
+from urllib.error import HTTPError
 
 import pytest
 import yaml
@@ -143,7 +144,10 @@ def install_fake_http(monkeypatch, responses):
 
     def fake_urlopen(request):
         requests.append({key.lower(): value for key, value in request.header_items()})
-        return queue.pop(0)
+        result = queue.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
     monkeypatch.setattr(checkpoints_module, "urlopen", fake_urlopen)
     return requests
@@ -325,6 +329,103 @@ def test_direct_resume_restarts_when_entity_validator_changes(tmp_path, monkeypa
     assert target.read_bytes() == new_payload
 
 
+def test_complete_partial_revalidates_unchanged_entity_without_redownload(
+    tmp_path, monkeypatch
+):
+    """Catch complete partials issuing an invalid bytes=<total>- request."""
+
+    payload = b"abcdefghij"
+    target = tmp_path / "model.bin"
+    write_partial_resume_state(target, payload, '"v1"', len(payload))
+    requests = install_fake_http(
+        monkeypatch,
+        [
+            FakeHTTPResponse(
+                payload[:1],
+                status=206,
+                headers={
+                    "Content-Range": "bytes 0-0/10",
+                    "Content-Length": "1",
+                    "ETag": '"v1"',
+                },
+            )
+        ],
+    )
+
+    download_direct(
+        DirectSource(url="https://example.test/model.bin", filename="model.bin"),
+        target,
+        DigestSpec(policy="sha256", sha256=hashlib.sha256(payload).hexdigest()),
+    )
+
+    assert requests == [{"range": "bytes=0-0", "if-range": '"v1"'}]
+    assert target.read_bytes() == payload
+
+
+def test_complete_partial_overwrites_when_entity_changed(tmp_path, monkeypatch):
+    """Catch a complete old entity being published after validator mismatch."""
+
+    old_payload = b"abcdefghij"
+    new_payload = b"1234567890"
+    target = tmp_path / "model.bin"
+    write_partial_resume_state(target, old_payload, '"v1"', len(old_payload))
+    requests = install_fake_http(
+        monkeypatch,
+        [
+            FakeHTTPResponse(
+                new_payload,
+                status=200,
+                headers={"Content-Length": "10", "ETag": '"v2"'},
+            )
+        ],
+    )
+
+    download_direct(
+        DirectSource(url="https://example.test/model.bin", filename="model.bin"),
+        target,
+        DigestSpec(policy="sha256", sha256=hashlib.sha256(new_payload).hexdigest()),
+    )
+
+    assert requests == [{"range": "bytes=0-0", "if-range": '"v1"'}]
+    assert target.read_bytes() == new_payload
+
+
+def test_complete_partial_handles_416_once_then_restarts_without_range(
+    tmp_path, monkeypatch
+):
+    """Catch identical Range retry loops after an HTTP 416 response."""
+
+    payload = b"abcdefghij"
+    target = tmp_path / "model.bin"
+    write_partial_resume_state(target, payload, '"v1"', len(payload))
+    error = HTTPError(
+        "https://example.test/model.bin", 416, "Range Not Satisfiable", {}, None
+    )
+    requests = install_fake_http(
+        monkeypatch,
+        [
+            error,
+            FakeHTTPResponse(
+                payload,
+                status=200,
+                headers={"Content-Length": "10", "ETag": '"v1"'},
+            ),
+        ],
+    )
+
+    download_direct(
+        DirectSource(url="https://example.test/model.bin", filename="model.bin"),
+        target,
+        DigestSpec(policy="sha256", sha256=hashlib.sha256(payload).hexdigest()),
+    )
+
+    assert requests == [
+        {"range": "bytes=0-0", "if-range": '"v1"'},
+        {},
+    ]
+    assert target.read_bytes() == payload
+
+
 def test_direct_download_rejects_a_symlinked_partial_before_writing(tmp_path, monkeypatch):
     """Catch resume writes following a sibling .partial symlink outside staging."""
 
@@ -399,8 +500,9 @@ def test_huggingface_fetch_rejects_a_symlinked_staging_directory(tmp_path, monke
     [
         {},
         {"README.md": b"metadata", "config.json": b"{}"},
+        {"config.json": b"{}", "model.safetensors": b""},
     ],
-    ids=["empty", "metadata-only"],
+    ids=["empty", "metadata-only", "empty-primary"],
 )
 def test_huggingface_fetch_requires_primary_weight_before_publication(
     tmp_path, monkeypatch, payload
@@ -440,6 +542,37 @@ def test_huggingface_fetch_requires_primary_weight_before_publication(
         fetch_resource(tmp_path, resource)
 
     assert not (tmp_path / "checkpoints" / "official" / "model").exists()
+
+
+def test_direct_fetch_rejects_an_empty_required_file(tmp_path, monkeypatch):
+    """Catch capture policy locking an empty direct-download payload as successful."""
+
+    requests = install_fake_http(
+        monkeypatch,
+        [FakeHTTPResponse(b"", status=200, headers={"Content-Length": "0", "ETag": '"v1"'})],
+    )
+    resource = CheckpointResource.model_validate(
+        {
+            "id": "test_direct",
+            "backend": "direct",
+            "provenance": "official",
+            "teacher_family": "masked_mdlm",
+            "destination": "official/direct",
+            "license": "test",
+            "terms_url": "https://example.test/terms",
+            "digest": {"policy": "capture_after_download"},
+            "required_files": ["model.bin"],
+            "source": {
+                "url": "https://example.test/model.bin",
+                "filename": "model.bin",
+            },
+        }
+    )
+
+    with pytest.raises(FileNotFoundError, match="empty"):
+        fetch_resource(tmp_path, resource)
+
+    assert requests == [{}]
 
 
 def test_huggingface_fetch_enforces_per_file_manifest_digests(tmp_path, monkeypatch):
@@ -671,6 +804,66 @@ def test_gdrive_fetch_enforces_per_file_manifest_digests(tmp_path, monkeypatch):
     assert not (tmp_path / "checkpoints" / "official" / "rdlm").exists()
 
 
+def test_gdrive_stale_partial_is_quarantined_and_rerun_succeeds(
+    tmp_path, monkeypatch
+):
+    """Catch unexpected staging files causing every Drive rerun to fail forever."""
+
+    resource = CheckpointResource.model_validate(
+        {
+            "id": "test_drive",
+            "backend": "gdrive",
+            "provenance": "official",
+            "teacher_family": "continuous_rdlm",
+            "destination": "official/rdlm",
+            "license": "test",
+            "terms_url": "https://example.test/terms",
+            "digest": {"policy": "capture_after_download"},
+            "required_files": ["checkpoint.pth", "config.yaml"],
+            "source": {
+                "folder_id": "folder123",
+                "expected_files": {"checkpoint.pth": "fileA", "config.yaml": "fileB"},
+            },
+        }
+    )
+    staging = tmp_path / "checkpoints" / "official" / "rdlm.partial"
+    object_path = staging / ".objects" / "fileA.partial"
+    object_path.parent.mkdir(parents=True)
+    object_path.write_bytes(b"resume-prefix")
+    (staging / "unexpected.bin").write_bytes(b"stale")
+
+    def interrupted_run(command, check):
+        raise checkpoints_module.subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(checkpoints_module.subprocess, "run", interrupted_run)
+    with pytest.raises(checkpoints_module.subprocess.CalledProcessError):
+        fetch_resource(tmp_path, resource)
+
+    assert object_path.read_bytes() == b"resume-prefix"
+    assert not (staging / "unexpected.bin").exists()
+    quarantined = list(
+        (tmp_path / "checkpoints" / "quarantine").glob(
+            "*/official/rdlm.partial/unexpected.bin"
+        )
+    )
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == b"stale"
+
+    def successful_run(command, check):
+        file_id = command[command.index("--id") + 1]
+        output = Path(command[command.index("--output") + 1])
+        output.write_bytes({"fileA": b"weights", "fileB": b"config"}[file_id])
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(checkpoints_module.subprocess, "run", successful_run)
+    record = fetch_resource(tmp_path, resource)
+
+    assert record["status"] == "downloaded"
+    destination = tmp_path / "checkpoints" / "official" / "rdlm"
+    assert (destination / "checkpoint.pth").read_bytes() == b"weights"
+    assert (destination / "config.yaml").read_bytes() == b"config"
+
+
 def test_real_downloads_positively_require_linux():
     """Catch accidental acquisition on any unapproved operating system."""
 
@@ -891,6 +1084,24 @@ def test_lock_verification_rejects_a_downloaded_resource_without_files(tmp_path)
     assert report["ok"] is False
 
 
+@pytest.mark.parametrize("malformed", [[], "not-a-record", None])
+def test_lock_verification_structures_nonmapping_resource_records(
+    tmp_path, malformed
+):
+    """Catch malformed lock values reaching dict.get and raising AttributeError."""
+
+    report = verify_checkpoint_lock(
+        tmp_path,
+        {"schema_version": 1, "resources": {"broken_resource": malformed}},
+    )
+
+    record = report["resources"]["broken_resource"]
+    assert record["status"] == "invalid"
+    assert record["error"]["type"] == "InvalidResourceRecord"
+    assert "broken_resource" in record["error"]["message"]
+    assert report["ok"] is False
+
+
 def test_lock_verification_rejects_an_empty_resource_set(tmp_path):
     """Catch an empty lock being accepted as complete verification."""
 
@@ -922,12 +1133,26 @@ def test_lock_verification_cross_checks_manifest_resource_ids(tmp_path):
     assert report["ok"] is False
 
 
-def test_lock_verification_requires_exact_schema_version(tmp_path):
+@pytest.mark.parametrize("schema_version", [2, True, 1.0, "1", None])
+def test_lock_verification_requires_exact_schema_version(tmp_path, schema_version):
     """Catch a future or malformed lock schema being interpreted as schema 1."""
 
     report = verify_checkpoint_lock(
         tmp_path,
-        {"schema_version": 2, "resources": {"x": {"status": "unavailable", "files": []}}},
+        {
+            "schema_version": schema_version,
+            "resources": {"x": {"status": "unavailable", "files": []}},
+        },
+    )
+
+    assert report["schema_status"] == "invalid"
+    assert report["ok"] is False
+
+
+def test_lock_verification_rejects_a_missing_schema_version(tmp_path):
+    report = verify_checkpoint_lock(
+        tmp_path,
+        {"resources": {"x": {"status": "unavailable", "files": []}}},
     )
 
     assert report["schema_status"] == "invalid"

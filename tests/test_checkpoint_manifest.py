@@ -31,6 +31,34 @@ def checkpoints():
     return load_checkpoint_manifest(ROOT / "artifacts" / "checkpoints.yaml")
 
 
+@pytest.fixture
+def per_file_resource():
+    return CheckpointResource.model_validate(
+        {
+            "id": "per_file_fixture",
+            "backend": "huggingface",
+            "provenance": "official",
+            "teacher_family": "masked_mdlm",
+            "destination": "official/per-file-fixture",
+            "license": "test",
+            "terms_url": "https://example.test/terms",
+            "digest": {
+                "policy": "sha256",
+                "per_file_sha256": {
+                    "config.json": "1" * 64,
+                    "model.safetensors": "2" * 64,
+                },
+            },
+            "required_files": ["config.json", "model.safetensors"],
+            "source": {
+                "repo_id": "owner/model",
+                "revision": "a" * 40,
+                "allow_patterns": ["config.json", "model.safetensors"],
+            },
+        }
+    )
+
+
 def test_every_supported_cell_has_checkpoint_or_training_recipe(registry, checkpoints):
     """Catch supported experiments with no auditable acquisition path."""
 
@@ -53,7 +81,9 @@ def test_runtime_coverage_validation_rejects_a_recipe_for_the_wrong_cell(
         validate_checkpoint_coverage(mutated, checkpoints)
 
 
-def test_checkpoint_sources_are_typed_and_public_resources_are_auditable(checkpoints):
+def test_checkpoint_sources_are_typed_and_public_resources_are_auditable(
+    checkpoints, per_file_resource
+):
     """Catch an unimplemented backend or a public resource missing terms/digest policy."""
 
     assert {resource.backend for resource in checkpoints.resources.values()} <= {
@@ -67,13 +97,26 @@ def test_checkpoint_sources_are_typed_and_public_resources_are_auditable(checkpo
         "gdrive",
         "zenodo",
     }
-    for resource in checkpoints.resources.values():
+    audited_resources = [*checkpoints.resources.values(), per_file_resource]
+    for resource in audited_resources:
         assert resource.terms_url.startswith("https://")
         assert resource.digest.policy in {"sha256", "capture_after_download"}
         if resource.digest.policy == "sha256":
-            assert len(resource.digest.sha256) == 64
+            if resource.digest.sha256 is not None:
+                assert len(resource.digest.sha256) == 64
+                assert not resource.digest.per_file_sha256
+            else:
+                assert resource.digest.per_file_sha256
+                assert set(resource.digest.per_file_sha256) == set(
+                    resource.required_files
+                )
+                assert all(
+                    len(digest) == 64
+                    for digest in resource.digest.per_file_sha256.values()
+                )
         else:
             assert resource.digest.sha256 is None
+            assert not resource.digest.per_file_sha256
 
 
 def test_huggingface_resources_declare_required_payload_inventory(checkpoints):
@@ -130,6 +173,31 @@ def test_gdrive_path_to_file_id_inventory_is_one_to_one():
             folder_id="folder123",
             expected_files={"model.bin": "sameID", "config.json": "sameID"},
         )
+
+
+@pytest.mark.parametrize("schema_version", [True, 1.0, "1", None])
+def test_manifest_schema_version_requires_the_exact_integer_one(
+    tmp_path, schema_version
+):
+    """Catch bool, float, string, or null schema versions coercing to version 1."""
+
+    document = yaml.safe_load((ROOT / "artifacts" / "checkpoints.yaml").read_text())
+    document["schema_version"] = schema_version
+    manifest = tmp_path / "checkpoints.yaml"
+    manifest.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_checkpoint_manifest(manifest)
+
+
+def test_manifest_schema_version_is_required(tmp_path):
+    document = yaml.safe_load((ROOT / "artifacts" / "checkpoints.yaml").read_text())
+    document.pop("schema_version")
+    manifest = tmp_path / "checkpoints.yaml"
+    manifest.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_checkpoint_manifest(manifest)
 
 
 def test_known_primary_sources_and_immutable_hf_revisions_are_recorded(checkpoints):
