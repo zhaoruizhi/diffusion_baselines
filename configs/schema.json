@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Diffusion language baseline experiment registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["step_grids", "models"],
+  "properties": {
+    "step_grids": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["many", "few"],
+      "properties": {
+        "many": {"const": [1, 2, 4, 8, 16, 32, 1024]},
+        "few": {"const": [1, 2, 4, 8, 16, 32]}
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["category", "environment", "adapter", "source", "datasets"],
+        "properties": {
+          "category": {"enum": ["many", "few"]},
+          "environment": {"pattern": "^[a-z][a-z0-9-]*$"},
+          "adapter": {"pattern": "^[a-z][a-z0-9-]*$"},
+          "source": {"pattern": "^[a-z][a-z0-9-]*$"},
+          "datasets": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["lm1b", "owt"],
+            "properties": {
+              "lm1b": {"$ref": "#/$defs/dataset_support"},
+              "owt": {"$ref": "#/$defs/dataset_support"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "dataset_support": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["supported", "unsupported"]},
+        "provenance": {"enum": ["official", "reference_reproduction", "self_trained"]},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

@@ -1,0 +1,96 @@
+step_grids:
+  many: [1, 2, 4, 8, 16, 32, 1024]
+  few: [1, 2, 4, 8, 16, 32]
+models:
+  flm:
+    category: many
+    environment: dlb-flm
+    adapter: flm
+    source: flm
+    datasets:
+      lm1b: {status: supported, provenance: official}
+      owt: {status: supported, provenance: official}
+  langflow:
+    category: many
+    environment: dlb-langflow
+    adapter: langflow
+    source: langflow
+    datasets:
+      lm1b:
+        status: unsupported
+        reason: No complete public LM1B checkpoint or training release is available.
+      owt: {status: supported, provenance: official}
+  duo:
+    category: many
+    environment: dlb-duo
+    adapter: duo
+    source: duo
+    datasets:
+      lm1b: {status: supported, provenance: reference_reproduction}
+      owt: {status: supported, provenance: official}
+  mdlm:
+    category: many
+    environment: dlb-mdlm
+    adapter: mdlm
+    source: mdlm
+    datasets:
+      lm1b: {status: supported, provenance: reference_reproduction}
+      owt: {status: supported, provenance: official}
+  candi:
+    category: many
+    environment: dlb-candi
+    adapter: candi
+    source: candi
+    datasets:
+      lm1b: {status: supported, provenance: reference_reproduction}
+      owt: {status: supported, provenance: reference_reproduction}
+  rdlm:
+    category: many
+    environment: dlb-rdlm
+    adapter: rdlm
+    source: rdlm
+    datasets:
+      lm1b: {status: supported, provenance: official}
+      owt:
+        status: unsupported
+        reason: The official RDLM release and paper do not provide an OWT model.
+  fmlm:
+    category: few
+    environment: dlb-flm
+    adapter: flm
+    source: flm
+    datasets:
+      lm1b: {status: supported, provenance: official}
+      owt: {status: supported, provenance: official}
+  duo_dcd:
+    category: few
+    environment: dlb-duo
+    adapter: duo
+    source: duo
+    datasets:
+      lm1b: {status: supported, provenance: reference_reproduction}
+      owt: {status: supported, provenance: official}
+  duo_di4c:
+    category: few
+    environment: dlb-di4c
+    adapter: di4c
+    source: di4c
+    datasets:
+      lm1b: {status: supported, provenance: reference_reproduction}
+      owt: {status: supported, provenance: reference_reproduction}
+  mdlm_sdtt:
+    category: few
+    environment: dlb-sdtt
+    adapter: sdtt
+    source: sdtt
+    datasets:
+      lm1b: {status: supported, provenance: reference_reproduction}
+      owt: {status: supported, provenance: official}
+  mdlm_di4c:
+    category: few
+    environment: dlb-di4c
+    adapter: di4c
+    source: di4c
+    datasets:
+      lm1b: {status: supported, provenance: reference_reproduction}
+      owt: {status: supported, provenance: official}
