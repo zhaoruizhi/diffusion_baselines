@@ -198,6 +198,65 @@ def test_direct_download_discards_unvalidated_partial_and_atomically_publishes(
     assert result["sha256"] == digest
 
 
+def test_direct_download_reuses_a_nonempty_regular_target(tmp_path, monkeypatch):
+    payload = b"existing-checkpoint"
+    target = tmp_path / "model.bin"
+    target.write_bytes(payload)
+    requests = install_fake_http(monkeypatch, [])
+
+    result = download_direct(
+        DirectSource(url="https://example.test/model.bin", filename="model.bin"),
+        target,
+        DigestSpec(policy="sha256", sha256=hashlib.sha256(payload).hexdigest()),
+    )
+
+    assert requests == []
+    assert result["status"] == "reused"
+    assert result["size_bytes"] == len(payload)
+    assert target.read_bytes() == payload
+
+
+def test_direct_download_quarantines_an_empty_matching_target_before_reuse(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "checkpoints" / "official" / "model.bin"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"")
+    requests = install_fake_http(
+        monkeypatch,
+        [
+            FakeHTTPResponse(
+                b"replacement",
+                status=200,
+                headers={"Content-Length": "11", "ETag": '"v2"'},
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="download digest mismatch"):
+        download_direct(
+            DirectSource(
+                url="https://example.test/model.bin", filename="model.bin"
+            ),
+            target,
+            DigestSpec(
+                policy="sha256", sha256=hashlib.sha256(b"").hexdigest()
+            ),
+            quarantine_root=tmp_path / "checkpoints" / "quarantine",
+        )
+
+    assert requests == [{}]
+    assert not target.exists()
+    quarantined = list(
+        (tmp_path / "checkpoints" / "quarantine").glob(
+            "*/official/model.bin"
+        )
+    )
+    assert len(quarantined) == 1
+    assert quarantined[0].is_file()
+    assert quarantined[0].stat().st_size == 0
+
+
 def test_direct_resume_sends_if_range_and_accepts_exact_validated_206(
     tmp_path, monkeypatch
 ):
@@ -862,6 +921,63 @@ def test_gdrive_stale_partial_is_quarantined_and_rerun_succeeds(
     destination = tmp_path / "checkpoints" / "official" / "rdlm"
     assert (destination / "checkpoint.pth").read_bytes() == b"weights"
     assert (destination / "config.yaml").read_bytes() == b"config"
+
+
+def test_gdrive_quarantines_a_symlinked_object_partial_before_successful_rerun(
+    tmp_path, monkeypatch
+):
+    resource = CheckpointResource.model_validate(
+        {
+            "id": "test_drive",
+            "backend": "gdrive",
+            "provenance": "official",
+            "teacher_family": "continuous_rdlm",
+            "destination": "official/rdlm",
+            "license": "test",
+            "terms_url": "https://example.test/terms",
+            "digest": {"policy": "capture_after_download"},
+            "required_files": ["checkpoint.pth", "config.yaml"],
+            "source": {
+                "folder_id": "folder123",
+                "expected_files": {"checkpoint.pth": "fileA", "config.yaml": "fileB"},
+            },
+        }
+    )
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"sentinel")
+    object_path = (
+        tmp_path
+        / "checkpoints"
+        / "official"
+        / "rdlm.partial"
+        / ".objects"
+        / "fileA.partial"
+    )
+    object_path.parent.mkdir(parents=True)
+    object_path.symlink_to(outside)
+
+    def successful_run(command, check):
+        file_id = command[command.index("--id") + 1]
+        output = Path(command[command.index("--output") + 1])
+        output.write_bytes({"fileA": b"weights", "fileB": b"config"}[file_id])
+        return types.SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(checkpoints_module.subprocess, "run", successful_run)
+    record = fetch_resource(tmp_path, resource)
+
+    assert record["status"] == "downloaded"
+    assert outside.read_bytes() == b"sentinel"
+    destination = tmp_path / "checkpoints" / "official" / "rdlm"
+    assert (destination / "checkpoint.pth").read_bytes() == b"weights"
+    assert (destination / "config.yaml").read_bytes() == b"config"
+    quarantined = list(
+        (tmp_path / "checkpoints" / "quarantine").glob(
+            "*/official/rdlm.partial/.objects/fileA.partial"
+        )
+    )
+    assert len(quarantined) == 1
+    assert quarantined[0].is_symlink()
+    assert quarantined[0].readlink() == outside
 
 
 def test_real_downloads_positively_require_linux():

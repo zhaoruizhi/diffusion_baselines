@@ -462,15 +462,30 @@ def download_direct(
 ) -> dict[str, object]:
     """Resume an HTTP download into ``.partial`` and atomically publish it."""
 
-    if target.is_symlink():
-        raise ValueError(f"checkpoint target path is a symlink: {target}")
-    if target.exists() and digest.sha256 and sha256_file(target) == digest.sha256:
-        return {
-            "status": "reused",
-            "sha256": digest.sha256,
-            "size_bytes": target.stat().st_size,
-            "quarantined": None,
-        }
+    quarantined_existing = None
+    try:
+        target_info = target.lstat()
+    except FileNotFoundError:
+        target_info = None
+    if target_info is not None:
+        valid_target = stat.S_ISREG(target_info.st_mode) and target_info.st_size > 0
+        if not valid_target:
+            effective_quarantine_root = (
+                quarantine_root or target.parents[1] / "quarantine"
+            )
+            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+            quarantine = _quarantine_path(
+                target, effective_quarantine_root, stamp
+            )
+            os.replace(target, quarantine)
+            quarantined_existing = quarantine.as_posix()
+        elif digest.sha256 and sha256_file(target) == digest.sha256:
+            return {
+                "status": "reused",
+                "sha256": digest.sha256,
+                "size_bytes": target_info.st_size,
+                "quarantined": None,
+            }
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_name(target.name + ".partial")
     if partial.is_symlink():
@@ -650,12 +665,15 @@ def download_direct(
         checksum=published_checksum,
     )
     metadata_path.unlink(missing_ok=True)
-    return publish_partial(
+    result = publish_partial(
         partial,
         target,
         digest,
         quarantine_root=quarantine_root,
     )
+    if quarantined_existing is not None and result["quarantined"] is None:
+        result["quarantined"] = quarantined_existing
+    return result
 
 
 def select_zenodo_files(
@@ -736,9 +754,10 @@ def _quarantine_unexpected_gdrive_staging(
     quarantine_root: Path,
 ) -> list[str]:
     allowed_files = set(source.expected_files)
-    allowed_files.update(
+    allowed_object_files = {
         f".objects/{file_id}.partial" for file_id in source.expected_files.values()
-    )
+    }
+    allowed_files.update(allowed_object_files)
     allowed_directories = {".objects"}
     for name in allowed_files:
         relative = PurePosixPath(name)
@@ -747,6 +766,32 @@ def _quarantine_unexpected_gdrive_staging(
         )
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     quarantined = []
+    for name in allowed_object_files:
+        relative = PurePosixPath(name)
+        current = partial
+        valid_parents = True
+        for part in relative.parts[:-1]:
+            current = current / part
+            try:
+                parent_info = current.lstat()
+            except FileNotFoundError:
+                valid_parents = False
+                break
+            if not stat.S_ISDIR(parent_info.st_mode):
+                valid_parents = False
+                break
+        if not valid_parents:
+            continue
+        item = partial.joinpath(*relative.parts)
+        try:
+            item_info = item.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(item_info.st_mode) and item_info.st_size > 0:
+            continue
+        quarantine = _quarantine_path(item, quarantine_root, stamp)
+        os.replace(item, quarantine)
+        quarantined.append(quarantine.as_posix())
     for item in sorted(
         partial.rglob("*"), key=lambda path: len(path.parts), reverse=True
     ):
