@@ -1,0 +1,37 @@
+{
+  "manifest_sha256": "b7b0b94f1f7dfcd037110fca3d3b7f0163b551985a542efc0d014d689fde6a4d",
+  "sources": {
+    "candi": {
+      "commit": "cd57ae9eec98d6ac71cd52bdc50eeec8dfd70f91",
+      "url": "https://github.com/patrickpynadath1/candi-diffusion.git"
+    },
+    "di4c": {
+      "commit": "ac61ff9fe8e85120f9e1d2a8c5a332f8b8353dd3",
+      "url": "https://github.com/sony/di4c.git"
+    },
+    "duo": {
+      "commit": "7c9b498f5b717de064d6fad7e2509c866e6cb620",
+      "url": "https://github.com/s-sahoo/duo.git"
+    },
+    "flm": {
+      "commit": "a1918d5164e5038e37d0b7a4fb2010ce75b863b3",
+      "url": "https://github.com/david3684/flm.git"
+    },
+    "langflow": {
+      "commit": "a712b08570c56c787d6ef24f8e906a2dcdf768f5",
+      "url": "https://github.com/nealchen2003/LangFlow.git"
+    },
+    "mdlm": {
+      "commit": "c112c526d193436838c98d81455ee51f90309470",
+      "url": "https://github.com/kuleshov-group/mdlm.git"
+    },
+    "rdlm": {
+      "commit": "67443aa6a2d0fa981eb7c6105f9cbc563e59c5c1",
+      "url": "https://github.com/harryjo97/RDLM.git"
+    },
+    "sdtt": {
+      "commit": "1150985e90b8f2d5749e4469d5154eff9ec922c4",
+      "url": "https://github.com/jdeschena/sdtt.git"
+    }
+  }
+}
