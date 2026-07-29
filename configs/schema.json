@@ -47,7 +47,23 @@
         "status": {"enum": ["supported", "unsupported"]},
         "provenance": {"enum": ["official", "reference_reproduction", "self_trained"]},
         "reason": {"type": "string", "minLength": 1}
-      }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "supported"}}, "required": ["status"]},
+          "then": {
+            "required": ["provenance"],
+            "not": {"required": ["reason"]}
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "unsupported"}}, "required": ["status"]},
+          "then": {
+            "required": ["reason"],
+            "not": {"required": ["provenance"]}
+          }
+        }
+      ]
     }
   }
 }

@@ -1,6 +1,10 @@
+import copy
+import json
 from pathlib import Path
 
 import pytest
+import yaml
+from jsonschema.validators import Draft202012Validator
 
 from dlb.registry import load_registry
 
@@ -8,6 +12,17 @@ from dlb.registry import load_registry
 @pytest.fixture
 def registry():
     return load_registry(Path("configs/experiments.yaml"))
+
+
+@pytest.fixture
+def schema_validator():
+    schema = json.loads(Path("configs/schema.json").read_text())
+    return Draft202012Validator(schema)
+
+
+@pytest.fixture
+def canonical_registry_document():
+    return yaml.safe_load(Path("configs/experiments.yaml").read_text())
 
 
 def test_registry_contains_full_scope(registry):
@@ -78,3 +93,33 @@ def test_loader_rejects_wrong_adapter_for_known_model(tmp_path):
 
     with pytest.raises(ValueError):
         load_registry(registry_config)
+
+
+def test_json_schema_accepts_canonical_registry(
+    schema_validator, canonical_registry_document
+):
+    assert list(schema_validator.iter_errors(canonical_registry_document)) == []
+
+
+@pytest.mark.parametrize(
+    ("status", "provenance", "reason"),
+    [
+        ("unsupported", "official", "A documented unsupported reason."),
+        ("unsupported", None, None),
+        ("supported", None, None),
+        ("supported", "official", "A reason must not accompany support."),
+    ],
+)
+def test_json_schema_rejects_invalid_support_combinations(
+    schema_validator, canonical_registry_document, status, provenance, reason
+):
+    document = copy.deepcopy(canonical_registry_document)
+    support = document["models"]["flm"]["datasets"]["lm1b"]
+    support.clear()
+    support["status"] = status
+    if provenance is not None:
+        support["provenance"] = provenance
+    if reason is not None:
+        support["reason"] = reason
+
+    assert list(schema_validator.iter_errors(document))
