@@ -37,15 +37,35 @@ environment_file() {
 environment_exists() {
   local environment="$1"
   local listing
-  listing="$("${CONDA_BIN}" env list --json)" || return 1
+  local info
+  listing="$("${CONDA_BIN}" env list --json)" || return 2
+  info="$("${CONDA_BIN}" info --json)" || return 2
   python3 -c '
 import json
-import pathlib
+import os
 import sys
 target = sys.argv[1]
-paths = json.load(sys.stdin).get("envs", [])
-sys.exit(0 if any(pathlib.Path(path).name == target for path in paths) else 1)
-' "${environment}" <<<"${listing}"
+try:
+    environment_document = json.loads(sys.argv[2])
+    info_document = json.loads(sys.argv[3])
+except (json.JSONDecodeError, TypeError):
+    sys.exit(2)
+if not isinstance(environment_document, dict) or not isinstance(info_document, dict):
+    sys.exit(2)
+environments = environment_document.get("envs")
+directories = info_document.get("envs_dirs")
+if not isinstance(environments, list) or not isinstance(directories, list):
+    sys.exit(2)
+if not all(isinstance(path, str) for path in environments + directories):
+    sys.exit(2)
+known = {os.path.normpath(path) for path in environments}
+expected = {os.path.normpath(os.path.join(directory, target)) for directory in directories}
+if known & expected:
+    sys.exit(0)
+if any(os.path.basename(path) == target for path in known):
+    sys.exit(2)
+sys.exit(1)
+' "${environment}" "${listing}" "${info}"
 }
 
 flash_attention_version() {
@@ -69,7 +89,14 @@ for environment in "${ENVIRONMENTS[@]}"; do
   if environment_exists "${environment}"; then
     action=(env update --file "${yaml_path}" --prune=false)
   else
-    action=(env create --file "${yaml_path}")
+    discovery_status=$?
+    if ((discovery_status == 1)); then
+      action=(env create --file "${yaml_path}")
+    else
+      echo "FAILED ${environment}: environment discovery was unreliable." >&2
+      failures+=("${environment}")
+      continue
+    fi
   fi
 
   if ! "${CONDA_BIN}" "${action[@]}"; then
@@ -92,4 +119,3 @@ if ((${#failures[@]})); then
   echo "Environment creation/update failed: ${failures[*]}" >&2
   exit 1
 fi
-

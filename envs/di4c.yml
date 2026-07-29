@@ -25,6 +25,7 @@ dependencies:
       - omegaconf==2.3.0
       - pandas==2.2.1
       - safetensors==0.4.2
+      - tensorboard==2.15.2
       - timm==0.9.16
       - tokenizers==0.15.2
       - torchdata==0.10.0
