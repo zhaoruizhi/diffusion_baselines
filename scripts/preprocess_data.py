@@ -67,8 +67,16 @@ def main() -> int:
     args = parse_args()
     root = args.root.resolve()
     sys.path.insert(0, str(root / "src"))
-    from dlb.data import build_data_manifest, build_owt_split, preprocess_split
-    from dlb.io import atomic_json_write
+    from dlb.data import (
+        build_data_manifest,
+        build_owt_split,
+        build_processing_contract,
+        preprocess_split,
+        publish_staged_output,
+        recover_incomplete_publication,
+        validate_download_manifest,
+        validate_manifest_contract,
+    )
 
     config_path = args.config or root / "artifacts" / "data.yaml"
     configuration = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -79,39 +87,34 @@ def main() -> int:
 
     hf_home = root / "data" / "raw" / "huggingface"
     datasets_cache = hf_home / "datasets"
-    hub_cache = hf_home / "hub"
     os.environ["HF_HOME"] = str(hf_home)
     os.environ["HF_DATASETS_CACHE"] = str(datasets_cache)
 
     from datasets import DatasetDict, load_dataset, load_from_disk
-    from huggingface_hub import snapshot_download
     from transformers import AutoTokenizer
 
     names = ("lm1b", "owt") if args.dataset == "all" else (args.dataset,)
     for name in names:
         specification = configuration["datasets"][name]
-        tokenizer_name = specification["tokenizer"]
-        tokenizer_revision = configuration["models"][tokenizer_name]
+        contract = build_processing_contract(configuration, name)
+        download_record = validate_download_manifest(configuration, downloads, name)
+        tokenizer_name = contract["tokenizer_id"]
+        tokenizer_revision = contract["tokenizer_revision"]
         manifest_path = root / "data" / "manifests" / f"{name}.json"
         output_dir = root / "data" / "processed" / OUTPUT_NAMES[name]
-        if output_dir.is_dir() and manifest_path.is_file():
-            existing = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if (
-                existing.get("source_revision") == specification["revision"]
-                and existing.get("tokenizer_revision") == tokenizer_revision
-            ):
-                print(f"SKIP {name} complete {len(load_from_disk(str(output_dir))['train'])} train sequences")
-                continue
-            raise RuntimeError(f"{name} output exists with a different pinned revision")
+        if recover_incomplete_publication(output_dir, manifest_path, contract):
+            completed = load_from_disk(str(output_dir))
+            print(f"SKIP {name} complete {len(completed['train'])} train sequences")
+            continue
 
-        snapshot_path = Path(
-            snapshot_download(
-                repo_id=tokenizer_name,
-                revision=tokenizer_revision,
-                cache_dir=hub_cache,
-                local_files_only=True,
-            )
-        )
+        for paths in download_record["cache_files"].values():
+            for relative_path in paths:
+                if not (root / relative_path).is_file():
+                    raise FileNotFoundError(f"downloaded cache file missing: {relative_path}")
+        tokenizer_record = downloads["models"][tokenizer_name]
+        snapshot_path = root / tokenizer_record["snapshot_path"]
+        if not snapshot_path.is_dir():
+            raise FileNotFoundError(f"tokenizer snapshot missing: {snapshot_path}")
         tokenizer = AutoTokenizer.from_pretrained(snapshot_path, local_files_only=True)
         if tokenizer.vocab_size != EXPECTED_VOCAB_SIZES[name]:
             raise RuntimeError(
@@ -127,7 +130,7 @@ def main() -> int:
             raise RuntimeError(f"{tokenizer_name} does not define required BOS/EOS semantics")
 
         if name == "lm1b":
-            snapshot_path = root / downloads["datasets"]["lm1b"]["dataset_snapshot"]
+            snapshot_path = root / download_record["dataset_snapshot"]
             raw = load_dataset(
                 "parquet",
                 data_files={
@@ -167,6 +170,14 @@ def main() -> int:
                 "train": source.select(range(boundary)),
                 "validation": source.select(range(boundary, len(source))),
             }
+        observed_document_counts = {
+            split: len(value) for split, value in sources.items()
+        }
+        if observed_document_counts != contract["expected_document_counts"]:
+            raise RuntimeError(
+                f"{name} document counts {observed_document_counts} differ from "
+                f"processing contract {contract['expected_document_counts']}"
+            )
 
         builder_cache = root / "data" / "processed" / ".builder-cache" / name
         processed = {}
@@ -184,33 +195,35 @@ def main() -> int:
             )
         processed_dict = DatasetDict(processed)
 
-        partial_dir = output_dir.with_name(output_dir.name + ".partial")
-        if partial_dir.exists():
-            shutil.rmtree(partial_dir)
-        partial_dir.parent.mkdir(parents=True, exist_ok=True)
-        processed_dict.save_to_disk(str(partial_dir))
-        os.replace(partial_dir, output_dir)
-
-        minimum, maximum = token_bounds(processed_dict)
+        staged_dir = output_dir.with_name(output_dir.name + ".staging")
+        if staged_dir.exists():
+            shutil.rmtree(staged_dir)
+        staged_dir.parent.mkdir(parents=True, exist_ok=True)
+        processed_dict.save_to_disk(str(staged_dir))
+        staged_dict = load_from_disk(str(staged_dir))
+        minimum, maximum = token_bounds(staged_dict)
         manifest = build_data_manifest(
             dataset=name,
-            dataset_id=specification["repo_id"],
-            source_revision=specification["revision"],
+            dataset_id=contract["dataset_id"],
+            source_revision=contract["source_revision"],
             tokenizer_id=tokenizer_name,
             tokenizer_revision=tokenizer_revision,
-            sequence_length=int(specification["sequence_length"]),
-            split_expression=specification["splits"],
-            document_counts={split: len(value) for split, value in sources.items()},
-            packed_sequence_counts={split: len(value) for split, value in processed.items()},
+            sequence_length=int(contract["sequence_length"]),
+            split_expression=contract["split_expression"],
+            document_counts=contract["expected_document_counts"],
+            packed_sequence_counts={
+                split: len(value) for split, value in staged_dict.items()
+            },
             vocab_size=int(tokenizer.vocab_size),
             min_token_id=minimum,
             max_token_id=maximum,
-            output_dir=output_dir,
+            output_dir=staged_dir,
             root=root,
+            processing_contract=contract,
+            published_output_dir=output_dir,
         )
-        if name == "lm1b":
-            manifest["source_materialization_revision"] = specification["parquet_revision"]
-        atomic_json_write(manifest_path, manifest)
+        validate_manifest_contract(manifest, contract)
+        publish_staged_output(staged_dir, output_dir, manifest_path, manifest)
         print(
             f"WROTE {name} documents={manifest['document_counts']} "
             f"packed={manifest['packed_sequence_counts']}"

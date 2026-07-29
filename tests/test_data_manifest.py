@@ -1,4 +1,5 @@
 import json
+import copy
 from pathlib import Path
 import subprocess
 import sys
@@ -6,7 +7,18 @@ import sys
 import pytest
 import yaml
 
-from dlb.data import build_data_manifest, check_owt_disk_space, verify_processed_dataset
+from dlb.data import (
+    build_data_manifest,
+    build_processing_contract,
+    disk_preflight_evidence,
+    processing_contract_sha256,
+    publication_is_reusable,
+    publish_staged_output,
+    recover_incomplete_publication,
+    validate_download_manifest,
+    validate_manifest_contract,
+    verify_processed_dataset,
+)
 from dlb.io import atomic_json_write
 
 
@@ -27,6 +39,38 @@ class TinyTokenizer:
         return " ".join(str(token_id) for token_id in token_ids)
 
 
+def _test_contract(
+    *,
+    dataset,
+    dataset_id,
+    source_revision,
+    tokenizer_id,
+    tokenizer_revision,
+    sequence_length,
+    split_expression,
+    document_counts,
+    vocab_size,
+    materialization_revision=None,
+):
+    return {
+        "schema_version": 1,
+        "dataset": dataset,
+        "dataset_id": dataset_id,
+        "source_revision": source_revision,
+        "source_materialization_revision": materialization_revision,
+        "tokenizer_id": tokenizer_id,
+        "tokenizer_revision": tokenizer_revision,
+        "sequence_length": sequence_length,
+        "split_expression": split_expression,
+        "expected_document_counts": document_counts,
+        "vocab_size": vocab_size,
+        "packing": {
+            "algorithm": "document_eos_continuous_bos_eos",
+            "version": 1,
+        },
+    }
+
+
 def test_manifest_records_reproducibility_fields_and_file_digests(tmp_path):
     """Catch manifests that cannot identify and integrity-check their data cache."""
 
@@ -35,6 +79,20 @@ def test_manifest_records_reproducibility_fields_and_file_digests(tmp_path):
     (output_dir / "train.arrow").write_bytes(b"train rows")
     (output_dir / "validation.arrow").write_bytes(b"validation rows")
 
+    contract = _test_contract(
+        dataset="owt",
+        dataset_id="openwebtext",
+        source_revision="a" * 40,
+        tokenizer_id="gpt2",
+        tokenizer_revision="b" * 40,
+        sequence_length=1024,
+        split_expression={
+            "train": "train[:-100000]",
+            "validation": "train[-100000:]",
+        },
+        document_counts={"train": 7_913_769, "validation": 100_000},
+        vocab_size=50_257,
+    )
     manifest = build_data_manifest(
         dataset="owt",
         dataset_id="openwebtext",
@@ -53,6 +111,7 @@ def test_manifest_records_reproducibility_fields_and_file_digests(tmp_path):
         max_token_id=50_256,
         output_dir=output_dir,
         root=tmp_path,
+        processing_contract=contract,
     )
 
     assert manifest["source_revision"] == "a" * 40
@@ -73,6 +132,8 @@ def test_manifest_records_reproducibility_fields_and_file_digests(tmp_path):
     ]
     assert all(len(entry["sha256"]) == 64 for entry in manifest["files"])
     assert manifest["verified"] is False
+    assert manifest["processing_contract"] == contract
+    assert manifest["processing_contract_sha256"] == processing_contract_sha256(contract)
 
 
 def test_verifier_checks_lengths_bounds_counts_digests_and_decoding(tmp_path):
@@ -85,6 +146,17 @@ def test_verifier_checks_lengths_bounds_counts_digests_and_decoding(tmp_path):
         "train": TinySplit([{"input_ids": [101, 10, 11, 102]}]),
         "validation": TinySplit([{"input_ids": [101, 12, 13, 102]}]),
     }
+    contract = _test_contract(
+        dataset="lm1b",
+        dataset_id="lm1b",
+        source_revision="c" * 40,
+        tokenizer_id="bert-base-uncased",
+        tokenizer_revision="d" * 40,
+        sequence_length=4,
+        split_expression={"train": "train", "validation": "test"},
+        document_counts={"train": 2, "validation": 1},
+        vocab_size=30_522,
+    )
     manifest = build_data_manifest(
         dataset="lm1b",
         dataset_id="lm1b",
@@ -100,6 +172,7 @@ def test_verifier_checks_lengths_bounds_counts_digests_and_decoding(tmp_path):
         max_token_id=102,
         output_dir=output_dir,
         root=tmp_path,
+        processing_contract=contract,
     )
 
     result = verify_processed_dataset(
@@ -107,6 +180,7 @@ def test_verifier_checks_lengths_bounds_counts_digests_and_decoding(tmp_path):
         manifest=manifest,
         output_dir=output_dir,
         tokenizer=TinyTokenizer(),
+        expected_contract=contract,
     )
 
     assert result["verified"] is True
@@ -120,6 +194,17 @@ def test_verifier_rejects_out_of_range_tokens(tmp_path):
     output_dir = tmp_path / "processed"
     output_dir.mkdir()
     (output_dir / "state.json").write_text("complete\n", encoding="utf-8")
+    contract = _test_contract(
+        dataset="tiny",
+        dataset_id="tiny",
+        source_revision="e" * 40,
+        tokenizer_id="tiny",
+        tokenizer_revision="f" * 40,
+        sequence_length=4,
+        split_expression={"train": "train", "validation": "validation"},
+        document_counts={"train": 1, "validation": 1},
+        vocab_size=20,
+    )
     manifest = build_data_manifest(
         dataset="tiny",
         dataset_id="tiny",
@@ -135,6 +220,7 @@ def test_verifier_rejects_out_of_range_tokens(tmp_path):
         max_token_id=19,
         output_dir=output_dir,
         root=tmp_path,
+        processing_contract=contract,
     )
     dataset = {
         "train": TinySplit([{"input_ids": [1, 2, 20, 3]}]),
@@ -147,6 +233,7 @@ def test_verifier_rejects_out_of_range_tokens(tmp_path):
             manifest=manifest,
             output_dir=output_dir,
             tokenizer=TinyTokenizer(),
+            expected_contract=contract,
         )
 
 
@@ -240,6 +327,196 @@ def test_owt_disk_preflight_requires_55_gib_unless_explicitly_overridden():
     required = 55 * 1024**3
 
     with pytest.raises(RuntimeError, match="at least 55 GiB"):
-        check_owt_disk_space(required - 1, allow_low_disk=False)
-    assert check_owt_disk_space(required - 1, allow_low_disk=True) is True
-    assert check_owt_disk_space(required, allow_low_disk=False) is False
+        disk_preflight_evidence(required - 1, allow_low_disk=False)
+
+
+def test_owt_disk_preflight_records_requested_and_actual_override_separately():
+    """Catch metadata claiming a bypass when the flag was unnecessary."""
+
+    required = 55 * 1024**3
+
+    sufficient = disk_preflight_evidence(required, allow_low_disk=True)
+    low = disk_preflight_evidence(required - 1, allow_low_disk=True)
+
+    assert sufficient == {
+        "observed_free_bytes": required,
+        "required_free_bytes": required,
+        "below_threshold": False,
+        "override_requested": True,
+        "override_used": False,
+    }
+    assert low == {
+        "observed_free_bytes": required - 1,
+        "required_free_bytes": required,
+        "below_threshold": True,
+        "override_requested": True,
+        "override_used": True,
+    }
+
+
+def _configuration():
+    root = Path(__file__).parents[1]
+    return yaml.safe_load((root / "artifacts" / "data.yaml").read_text())
+
+
+def _valid_downloads(configuration):
+    lm1b = configuration["datasets"]["lm1b"]
+    owt = configuration["datasets"]["owt"]
+    return {
+        "schema_version": 1,
+        "datasets": {
+            "lm1b": {
+                "repo_id": lm1b["repo_id"],
+                "source_revision": lm1b["revision"],
+                "materialization_revision": lm1b["parquet_revision"],
+                "split_rows": {
+                    "train": configuration["lm1b_archive"]["train_documents"],
+                    "test": configuration["lm1b_archive"]["test_documents"],
+                },
+                "dataset_snapshot": (
+                    "data/raw/huggingface/hub/datasets--lm1b/snapshots/"
+                    + lm1b["parquet_revision"]
+                ),
+                "source_metadata_snapshot": (
+                    "data/raw/huggingface/hub/datasets--lm1b/snapshots/"
+                    + lm1b["revision"]
+                ),
+                "cache_files": {"train": ["train.arrow"], "test": ["test.arrow"]},
+            },
+            "owt": {
+                "repo_id": owt["repo_id"],
+                "source_revision": owt["revision"],
+                "materialization_revision": None,
+                "split_rows": {"train": owt["documents"]},
+                "dataset_snapshot": None,
+                "cache_files": {"train": ["owt.arrow"]},
+            },
+        },
+        "models": {
+            name: {
+                "repo_id": name,
+                "revision": revision,
+                "snapshot_path": (
+                    f"data/raw/huggingface/hub/models--{name}/snapshots/{revision}"
+                ),
+            }
+            for name, revision in configuration["models"].items()
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("repo_id", "wrong/lm1b"),
+        ("source_revision", "0" * 40),
+        ("materialization_revision", "1" * 40),
+        ("split_rows", {"train": 1, "test": 1}),
+    ],
+)
+def test_preprocessing_rejects_stale_lm1b_download_provenance(field, bad_value):
+    """Catch preprocessing data that does not match its claimed immutable source."""
+
+    configuration = _configuration()
+    downloads = _valid_downloads(configuration)
+    downloads["datasets"]["lm1b"][field] = bad_value
+
+    with pytest.raises(ValueError, match=field):
+        validate_download_manifest(configuration, downloads, "lm1b")
+
+
+def test_preprocessing_validates_owt_rows_and_tokenizer_snapshot_revision():
+    """Catch truncated OWT caches or a tokenizer snapshot from another revision."""
+
+    configuration = _configuration()
+    downloads = _valid_downloads(configuration)
+    downloads["datasets"]["owt"]["split_rows"] = {"train": 8_000_000}
+    with pytest.raises(ValueError, match="split_rows"):
+        validate_download_manifest(configuration, downloads, "owt")
+
+    downloads = _valid_downloads(configuration)
+    downloads["models"]["gpt2"]["revision"] = "2" * 40
+    with pytest.raises(ValueError, match="tokenizer revision"):
+        validate_download_manifest(configuration, downloads, "owt")
+
+
+def test_preprocessing_rejects_snapshot_paths_for_other_immutable_revisions():
+    """Catch correct labels pointing preprocessing at stale snapshot content."""
+
+    configuration = _configuration()
+    downloads = _valid_downloads(configuration)
+    downloads["datasets"]["lm1b"]["dataset_snapshot"] = (
+        "data/raw/huggingface/hub/datasets--lm1b/snapshots/" + "4" * 40
+    )
+
+    with pytest.raises(ValueError, match="dataset_snapshot"):
+        validate_download_manifest(configuration, downloads, "lm1b")
+
+
+@pytest.mark.parametrize(
+    ("path", "bad_value"),
+    [
+        (("sequence_length",), 999),
+        (("split_expression", "validation"), "train[:100000]"),
+        (("tokenizer_id",), "wrong-tokenizer"),
+        (("source_materialization_revision",), "3" * 40),
+        (("packing", "version"), 999),
+    ],
+)
+def test_manifest_contract_rejects_processing_semantic_mutations(path, bad_value):
+    """Catch reuse or verification under stale processing semantics."""
+
+    expected = build_processing_contract(_configuration(), "lm1b")
+    manifest_contract = copy.deepcopy(expected)
+    target = manifest_contract
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = bad_value
+    manifest = {
+        "processing_contract": manifest_contract,
+        "processing_contract_sha256": processing_contract_sha256(manifest_contract),
+    }
+
+    with pytest.raises(ValueError, match="processing contract"):
+        validate_manifest_contract(manifest, expected)
+
+
+def test_restart_recovers_final_output_missing_manifest_and_publishes_cleanly(tmp_path):
+    """Catch a crash-after-rename state requiring manual deletion before rerun."""
+
+    configuration = _configuration()
+    contract = build_processing_contract(configuration, "lm1b")
+    final = tmp_path / "lm1b-bert-128"
+    final.mkdir()
+    (final / "interrupted.arrow").write_bytes(b"incomplete")
+    manifest_path = tmp_path / "lm1b.json"
+
+    assert recover_incomplete_publication(final, manifest_path, contract) is False
+    assert not final.exists()
+
+    staged = tmp_path / "lm1b-bert-128.staging"
+    staged.mkdir()
+    (staged / "train.arrow").write_bytes(b"complete")
+    manifest = build_data_manifest(
+        dataset="lm1b",
+        dataset_id=contract["dataset_id"],
+        source_revision=contract["source_revision"],
+        tokenizer_id=contract["tokenizer_id"],
+        tokenizer_revision=contract["tokenizer_revision"],
+        sequence_length=contract["sequence_length"],
+        split_expression=contract["split_expression"],
+        document_counts=contract["expected_document_counts"],
+        packed_sequence_counts={"train": 1, "validation": 1},
+        vocab_size=contract["vocab_size"],
+        min_token_id=1,
+        max_token_id=102,
+        output_dir=staged,
+        root=tmp_path,
+        processing_contract=contract,
+        published_output_dir=final,
+    )
+
+    publish_staged_output(staged, final, manifest_path, manifest)
+
+    assert publication_is_reusable(final, manifest_path, contract)
+    assert json.loads(manifest_path.read_text())["processed_path"] == "lm1b-bert-128"

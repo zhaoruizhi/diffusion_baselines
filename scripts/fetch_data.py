@@ -73,15 +73,19 @@ def main() -> int:
     from huggingface_hub import snapshot_download
 
     sys.path.insert(0, str(root / "src"))
-    from dlb.data import check_owt_disk_space
+    from dlb.data import disk_preflight_evidence, validate_download_manifest
     from dlb.io import atomic_json_write
 
     dataset_records: dict[str, object] = {}
+    owt_disk_preflight = None
     for name in ("lm1b", "owt"):
         specification = configuration["datasets"][name]
         if name == "owt":
             free_bytes = shutil.disk_usage(root).free
-            if check_owt_disk_space(free_bytes, allow_low_disk=args.allow_low_disk):
+            owt_disk_preflight = disk_preflight_evidence(
+                free_bytes, allow_low_disk=args.allow_low_disk
+            )
+            if owt_disk_preflight["override_used"]:
                 print(
                     f"WARNING low disk override: {free_bytes} bytes free, required 55 GiB",
                     file=sys.stderr,
@@ -139,7 +143,7 @@ def main() -> int:
                 raise RuntimeError("OpenWebText document count differs from pinned metadata")
         dataset_records[name] = {
             "repo_id": specification["repo_id"],
-            "revision": specification["revision"],
+            "source_revision": specification["revision"],
             "cache_files": {
                 split: [
                     _relative_cache_path(Path(entry["filename"]), root)
@@ -182,10 +186,12 @@ def main() -> int:
         "schema_version": 1,
         "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "hf_home": hf_home.relative_to(root).as_posix(),
-        "low_disk_override": bool(args.allow_low_disk),
+        "owt_disk_preflight": owt_disk_preflight,
         "datasets": dataset_records,
         "models": model_records,
     }
+    for dataset_name in ("lm1b", "owt"):
+        validate_download_manifest(configuration, manifest, dataset_name)
     atomic_json_write(root / "data" / "manifests" / "downloads.json", manifest)
     print(f"RAW CACHE BYTES {directory_size(hf_home)}")
     return 0

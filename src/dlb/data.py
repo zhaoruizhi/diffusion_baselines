@@ -4,18 +4,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import hashlib
+import json
+import os
 from pathlib import Path
 import random
+import shutil
 from typing import Iterable, Iterator, Mapping, Sequence
 
-from dlb.io import sha256_file
+from dlb.io import atomic_json_write, sha256_file
 
 
 OWT_REQUIRED_FREE_BYTES = 55 * 1024**3
+PACKING_ALGORITHM = "document_eos_continuous_bos_eos"
+PACKING_VERSION = 1
+VOCAB_SIZES = {"lm1b": 30_522, "owt": 50_257}
 
 
-def check_owt_disk_space(free_bytes: int, *, allow_low_disk: bool) -> bool:
-    """Enforce the OWT preflight and return whether an override was used."""
+def disk_preflight_evidence(free_bytes: int, *, allow_low_disk: bool) -> dict[str, object]:
+    """Enforce OWT free space and return exact auditable decision evidence."""
 
     below_threshold = free_bytes < OWT_REQUIRED_FREE_BYTES
     if below_threshold and not allow_low_disk:
@@ -23,7 +30,227 @@ def check_owt_disk_space(free_bytes: int, *, allow_low_disk: bool) -> bool:
             f"OpenWebText requires at least 55 GiB free; found {free_bytes} bytes. "
             "Pass --allow-low-disk to explicitly bypass."
         )
-    return below_threshold
+    return {
+        "observed_free_bytes": free_bytes,
+        "required_free_bytes": OWT_REQUIRED_FREE_BYTES,
+        "below_threshold": below_threshold,
+        "override_requested": allow_low_disk,
+        "override_used": below_threshold and allow_low_disk,
+    }
+
+
+def processing_contract_sha256(contract: Mapping[str, object]) -> str:
+    """Hash a processing contract using deterministic canonical JSON."""
+
+    payload = json.dumps(contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_processing_contract(
+    configuration: Mapping[str, object], dataset_name: str
+) -> dict[str, object]:
+    """Derive current processing expectations independently from any data manifest."""
+
+    datasets = configuration["datasets"]
+    models = configuration["models"]
+    specification = datasets[dataset_name]
+    if dataset_name == "lm1b":
+        archive = configuration["lm1b_archive"]
+        document_counts = {
+            "train": int(archive["train_documents"]),
+            "validation": int(archive["test_documents"]),
+        }
+    elif dataset_name == "owt":
+        total = int(specification["documents"])
+        document_counts = {"train": total - 100_000, "validation": 100_000}
+    else:
+        raise ValueError(f"unknown dataset {dataset_name!r}")
+    tokenizer_id = str(specification["tokenizer"])
+    return {
+        "schema_version": 1,
+        "dataset": dataset_name,
+        "dataset_id": str(specification["repo_id"]),
+        "source_revision": str(specification["revision"]),
+        "source_materialization_revision": specification.get("parquet_revision"),
+        "tokenizer_id": tokenizer_id,
+        "tokenizer_revision": str(models[tokenizer_id]),
+        "sequence_length": int(specification["sequence_length"]),
+        "split_expression": dict(specification["splits"]),
+        "expected_document_counts": document_counts,
+        "vocab_size": VOCAB_SIZES[dataset_name],
+        "packing": {"algorithm": PACKING_ALGORITHM, "version": PACKING_VERSION},
+    }
+
+
+def _expect_equal(field: str, observed: object, expected: object) -> None:
+    if observed != expected:
+        raise ValueError(f"{field} mismatch: observed {observed!r}, expected {expected!r}")
+
+
+def _validate_snapshot_revision(field: str, value: object, revision: object) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} missing")
+    parts = Path(value).parts
+    try:
+        snapshot_revision = parts[parts.index("snapshots") + 1]
+    except (ValueError, IndexError) as error:
+        raise ValueError(f"{field} is not a Hugging Face snapshot path") from error
+    _expect_equal(field, snapshot_revision, revision)
+
+
+def validate_download_manifest(
+    configuration: Mapping[str, object],
+    downloads: Mapping[str, object],
+    dataset_name: str,
+) -> Mapping[str, object]:
+    """Validate downloaded dataset and tokenizer provenance against pinned config."""
+
+    _expect_equal("schema_version", downloads.get("schema_version"), 1)
+    contract = build_processing_contract(configuration, dataset_name)
+    try:
+        record = downloads["datasets"][dataset_name]
+    except (KeyError, TypeError) as error:
+        raise ValueError(f"missing download record for {dataset_name}") from error
+    expected_raw_splits = (
+        {
+            "train": contract["expected_document_counts"]["train"],
+            "test": contract["expected_document_counts"]["validation"],
+        }
+        if dataset_name == "lm1b"
+        else {"train": int(configuration["datasets"]["owt"]["documents"])}
+    )
+    _expect_equal("repo_id", record.get("repo_id"), contract["dataset_id"])
+    _expect_equal(
+        "source_revision", record.get("source_revision"), contract["source_revision"]
+    )
+    _expect_equal(
+        "materialization_revision",
+        record.get("materialization_revision"),
+        contract["source_materialization_revision"],
+    )
+    _expect_equal("split_rows", record.get("split_rows"), expected_raw_splits)
+    expected_cache_splits = set(expected_raw_splits)
+    cache_files = record.get("cache_files")
+    if not isinstance(cache_files, Mapping) or set(cache_files) != expected_cache_splits:
+        raise ValueError("cache_files split mismatch")
+    if any(not isinstance(paths, list) or not paths for paths in cache_files.values()):
+        raise ValueError("cache_files must contain at least one file for every split")
+    if dataset_name == "lm1b":
+        _validate_snapshot_revision(
+            "dataset_snapshot",
+            record.get("dataset_snapshot"),
+            contract["source_materialization_revision"],
+        )
+        _validate_snapshot_revision(
+            "source_metadata_snapshot",
+            record.get("source_metadata_snapshot"),
+            contract["source_revision"],
+        )
+
+    tokenizer_id = contract["tokenizer_id"]
+    try:
+        tokenizer_record = downloads["models"][tokenizer_id]
+    except (KeyError, TypeError) as error:
+        raise ValueError(f"missing tokenizer download record for {tokenizer_id}") from error
+    _expect_equal("tokenizer repo_id", tokenizer_record.get("repo_id"), tokenizer_id)
+    _expect_equal(
+        "tokenizer revision",
+        tokenizer_record.get("revision"),
+        contract["tokenizer_revision"],
+    )
+    _validate_snapshot_revision(
+        "tokenizer snapshot_path",
+        tokenizer_record.get("snapshot_path"),
+        contract["tokenizer_revision"],
+    )
+    return record
+
+
+def validate_manifest_contract(
+    manifest: Mapping[str, object], expected_contract: Mapping[str, object]
+) -> None:
+    """Reject any manifest not created under the complete current contract."""
+
+    expected_fingerprint = processing_contract_sha256(expected_contract)
+    if manifest.get("processing_contract") != dict(expected_contract):
+        raise ValueError("processing contract fields do not match current configuration")
+    if manifest.get("processing_contract_sha256") != expected_fingerprint:
+        raise ValueError("processing contract fingerprint does not match current configuration")
+    top_level_fields = {
+        "dataset": "dataset",
+        "dataset_id": "dataset_id",
+        "source_revision": "source_revision",
+        "source_materialization_revision": "source_materialization_revision",
+        "tokenizer_id": "tokenizer_id",
+        "tokenizer_revision": "tokenizer_revision",
+        "sequence_length": "sequence_length",
+        "split_expression": "split_expression",
+        "document_counts": "expected_document_counts",
+    }
+    for manifest_field, contract_field in top_level_fields.items():
+        _expect_equal(
+            f"manifest {manifest_field}",
+            manifest.get(manifest_field),
+            expected_contract[contract_field],
+        )
+    vocabulary = manifest.get("vocabulary")
+    if not isinstance(vocabulary, Mapping):
+        raise ValueError("manifest vocabulary missing")
+    _expect_equal("manifest vocabulary size", vocabulary.get("size"), expected_contract["vocab_size"])
+
+
+def publication_is_reusable(
+    output_dir: Path, manifest_path: Path, expected_contract: Mapping[str, object]
+) -> bool:
+    """Return true only for a complete contract- and digest-matching publication."""
+
+    if not output_dir.is_dir() or not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        validate_manifest_contract(manifest, expected_contract)
+        return list(manifest["files"]) == inventory_files(output_dir)
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError, OSError):
+        return False
+
+
+def recover_incomplete_publication(
+    output_dir: Path, manifest_path: Path, expected_contract: Mapping[str, object]
+) -> bool:
+    """Keep a valid publication or remove project-generated incomplete state."""
+
+    if publication_is_reusable(output_dir, manifest_path, expected_contract):
+        return True
+    if output_dir.exists():
+        if not output_dir.is_dir():
+            raise ValueError(f"refusing to replace non-directory output {output_dir}")
+        shutil.rmtree(output_dir)
+    if manifest_path.exists():
+        if not manifest_path.is_file():
+            raise ValueError(f"refusing to replace non-file manifest {manifest_path}")
+        manifest_path.unlink()
+    return False
+
+
+def publish_staged_output(
+    staged_dir: Path,
+    output_dir: Path,
+    manifest_path: Path,
+    manifest: Mapping[str, object],
+) -> None:
+    """Atomically publish staged data followed by its already-computed manifest."""
+
+    if output_dir.exists():
+        raise FileExistsError(f"output already exists: {output_dir}")
+    if not staged_dir.is_dir():
+        raise FileNotFoundError(f"staged output missing: {staged_dir}")
+    if list(manifest["files"]) != inventory_files(staged_dir):
+        raise ValueError("staged file inventory does not match publication manifest")
+    staged_manifest = manifest_path.with_name(f".{manifest_path.name}.staging")
+    atomic_json_write(staged_manifest, dict(manifest))
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(staged_dir, output_dir)
+    os.replace(staged_manifest, manifest_path)
 
 
 @dataclass(frozen=True)
@@ -153,10 +380,12 @@ def build_data_manifest(
     max_token_id: int,
     output_dir: Path,
     root: Path,
+    processing_contract: Mapping[str, object],
+    published_output_dir: Path | None = None,
 ) -> dict[str, object]:
     """Build the reproducibility and integrity manifest for processed data."""
 
-    return {
+    manifest = {
         "schema_version": 1,
         "dataset": dataset,
         "dataset_id": dataset_id,
@@ -172,11 +401,19 @@ def build_data_manifest(
             "min_token_id": min_token_id,
             "max_token_id": max_token_id,
         },
-        "processed_path": _relative_to_root(output_dir, root),
+        "processed_path": _relative_to_root(published_output_dir or output_dir, root),
         "files": inventory_files(output_dir),
         "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "verified": False,
     }
+    manifest["source_materialization_revision"] = processing_contract[
+        "source_materialization_revision"
+    ]
+    manifest["processing_contract"] = dict(processing_contract)
+    manifest["processing_contract_sha256"] = processing_contract_sha256(
+        processing_contract
+    )
+    return manifest
 
 
 def _python_sequence_stats(split: object, expected_length: int) -> tuple[int, int, int]:
@@ -222,18 +459,20 @@ def verify_processed_dataset(
     manifest: Mapping[str, object],
     output_dir: Path,
     tokenizer: object,
+    expected_contract: Mapping[str, object],
     decode_samples_per_split: int = 3,
 ) -> dict[str, object]:
     """Fully verify row counts, lengths, token bounds, files, and decoding."""
 
-    expected_splits = {"train", "validation"}
+    validate_manifest_contract(manifest, expected_contract)
+    expected_splits = set(expected_contract["split_expression"])
     if set(dataset) != expected_splits:
         raise ValueError(f"processed splits must be {sorted(expected_splits)}")
 
-    expected_length = int(manifest["sequence_length"])
+    expected_length = int(expected_contract["sequence_length"])
     expected_counts = manifest["packed_sequence_counts"]
     vocabulary = manifest["vocabulary"]
-    vocab_size = int(vocabulary["size"])
+    vocab_size = int(expected_contract["vocab_size"])
     observed_minimum: int | None = None
     observed_maximum: int | None = None
     checked_sequences = 0

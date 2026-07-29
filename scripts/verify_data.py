@@ -27,7 +27,7 @@ def main() -> int:
     args = parse_args()
     root = args.root.resolve()
     sys.path.insert(0, str(root / "src"))
-    from dlb.data import verify_processed_dataset
+    from dlb.data import build_processing_contract, verify_processed_dataset
     from dlb.io import atomic_json_write
 
     config_path = args.config or root / "artifacts" / "data.yaml"
@@ -42,16 +42,11 @@ def main() -> int:
 
     names = ("lm1b", "owt") if args.dataset == "all" else (args.dataset,)
     for name in names:
-        specification = configuration["datasets"][name]
-        tokenizer_name = specification["tokenizer"]
-        tokenizer_revision = configuration["models"][tokenizer_name]
+        contract = build_processing_contract(configuration, name)
+        tokenizer_name = contract["tokenizer_id"]
+        tokenizer_revision = contract["tokenizer_revision"]
         manifest_path = root / "data" / "manifests" / f"{name}.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest["source_revision"] != specification["revision"]:
-            raise ValueError(f"{name} source revision differs from artifacts/data.yaml")
-        if manifest["tokenizer_revision"] != tokenizer_revision:
-            raise ValueError(f"{name} tokenizer revision differs from artifacts/data.yaml")
-
         snapshot_path = snapshot_download(
             repo_id=tokenizer_name,
             revision=tokenizer_revision,
@@ -66,6 +61,7 @@ def main() -> int:
             manifest=manifest,
             output_dir=output_dir,
             tokenizer=tokenizer,
+            expected_contract=contract,
         )
         atomic_json_write(manifest_path, verified)
         print(
