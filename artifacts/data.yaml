@@ -1,0 +1,33 @@
+schema_version: 1
+resolved_at: "2026-07-29"
+datasets:
+  lm1b:
+    repo_id: billion-word-benchmark/lm1b
+    revision: 35161838ea9e05371a25a8db037f94fcae4c2064
+    parquet_revision: 8d52bfd3cc2819fc1166dbb8144c328e2690de3e
+    config: plain_text
+    splits:
+      train: train
+      validation: test
+    sequence_length: 128
+    tokenizer: bert-base-uncased
+  owt:
+    repo_id: Skylion007/openwebtext
+    revision: 79d93d786212f7344586290adb811d4ae6a1762c
+    config: plain_text
+    documents: 8013769
+    splits:
+      train: "train[:-100000]"
+      validation: "train[-100000:]"
+    sequence_length: 1024
+    tokenizer: gpt2
+models:
+  bert-base-uncased: 86b5e0934494bd15c9632b12f734a8a67f723594
+  gpt2: 607a30d783dfa663caf39e06633721c8d4cfcd7e
+  gpt2-large: 32b71b12589c2f8d625668d2335a01cac3249519
+lm1b_archive:
+  url: http://www.statmt.org/lm-benchmark/1-billion-word-language-modeling-benchmark-r13output.tar.gz
+  size_bytes: 1792209805
+  sha256: 01ba60381110baf7f189dfd2b8374de371e8c9a340835793f190bdae9e90a34e
+  train_documents: 30301028
+  test_documents: 306688

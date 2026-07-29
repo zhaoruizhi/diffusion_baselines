@@ -241,19 +241,24 @@ Use `HF_HOME=$DLB_ROOT/data/raw/huggingface`, fixed dataset/model revisions, `da
 
 Persist DatasetDict objects with exact sequence lengths and manifests containing source revision, tokenizer revision, split expression, number of documents, number of packed sequences, vocabulary bounds and creation timestamp.
 
-- [ ] **Step 5: Run CPU tests and dry-run**
+- [ ] **Step 5: Complete local CPU/static validation and dry-run**
 
 Run: `python -m pytest tests/test_data_manifest.py tests/test_packing.py -v`
 Expected: PASS.
 Run: `python scripts/fetch_data.py --dry-run --root .`
 Expected: lists LM1B, OWT, BERT, GPT-2 and GPT-2 Large targets without network writes.
 
-- [ ] **Step 6: Download the full datasets locally and verify**
+- [ ] **Step 6: SERVER-ONLY acceptance — download, preprocess, and verify full data**
+
+Do not run these three commands on the local Mac. After cloning the committed
+project on the Linux GPU/server, run:
 
 Run: `python scripts/fetch_data.py --root .`
 Run: `python scripts/preprocess_data.py --root . --dataset all`
 Run: `python scripts/verify_data.py --root . --dataset all`
 Expected: both data manifests report `verified: true`.
+Local completion requires only Step 5; the ignored `data/` runtime tree remains
+absent until this server-only acceptance step.
 
 - [ ] **Step 7: Commit**
 
