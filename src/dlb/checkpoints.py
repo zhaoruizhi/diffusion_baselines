@@ -192,6 +192,8 @@ class TrainingRecipe(ManifestModel):
     teacher_adapter: TeacherAdapter | None = None
     command: str = Field(min_length=1)
     output: str
+    sampling_checkpoint: str | None = None
+    sampling_config: str | None = None
     prerequisites: list[str] = Field(default_factory=list)
     note: str | None = None
 
@@ -200,6 +202,20 @@ class TrainingRecipe(ManifestModel):
         path = safe_remote_path(self.output)
         if path.parts[0] != "checkpoints" or path.parts[1] != self.provenance:
             raise ValueError("recipe output must be inside checkpoints/<provenance>")
+        if self.sampling_checkpoint is not None:
+            checkpoint = safe_remote_path(self.sampling_checkpoint)
+            if checkpoint.suffix.lower() not in {
+                ".bin",
+                ".ckpt",
+                ".pt",
+                ".pth",
+                ".safetensors",
+            }:
+                raise ValueError("recipe sampling checkpoint has an unsupported suffix")
+        if self.sampling_config is not None:
+            config = safe_remote_path(self.sampling_config)
+            if config.suffix.lower() not in {".json", ".yaml", ".yml"}:
+                raise ValueError("recipe sampling config has an unsupported suffix")
         if self.source in {"sdtt", "di4c"}:
             expected = {
                 "uniform_duo": "uniform_to_absorbing",

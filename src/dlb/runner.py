@@ -165,6 +165,8 @@ def _resolve_checkpoint_provenance(
             "source_commit": recipe.source_commit,
             "teacher_family": recipe.teacher_family,
             "teacher_adapter": recipe.teacher_adapter,
+            "sampling_checkpoint": recipe.sampling_checkpoint,
+            "sampling_config": recipe.sampling_config,
         }
         digest = _canonical_sha256(
             {"manifest_sha256": manifest_sha256, "selector": selector, "files": inventory}

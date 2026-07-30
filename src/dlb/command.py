@@ -8,11 +8,13 @@ from pathlib import Path
 
 from dlb.adapters.base import AdapterError, BaseTeacherAdapter
 from dlb.adapters.candi import CANDIAdapter
+from dlb.adapters.di4c import Di4CAdapter
 from dlb.adapters.duo import DuoAdapter
 from dlb.adapters.flm import FLMAdapter
 from dlb.adapters.langflow import LangFlowAdapter
 from dlb.adapters.mdlm import MDLMAdapter
 from dlb.adapters.rdlm import RDLMAdapter
+from dlb.adapters.sdtt import SDTTAdapter
 from dlb.registry import load_registry
 from dlb.runner import RunRequest
 
@@ -26,6 +28,9 @@ ADAPTERS: dict[str, BaseTeacherAdapter] = {
     "candi": CANDIAdapter(),
     "langflow": LangFlowAdapter(),
     "rdlm": RDLMAdapter(),
+    "mdlm_sdtt": SDTTAdapter(),
+    "mdlm_di4c": Di4CAdapter("mdlm"),
+    "duo_di4c": Di4CAdapter("duo"),
 }
 
 

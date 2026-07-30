@@ -246,6 +246,7 @@ recipes:
       --output checkpoints/reference_reproduction/duo_di4c/lm1b
       --upstream-override is_di4c=true
     output: checkpoints/reference_reproduction/duo_di4c/lm1b
+    sampling_checkpoint: student_checkpoints/20000.ckpt
     prerequisites: [flm_lm1b_reproductions]
     note: Task 12's repository wrapper must adapt the uniform Duo vocabulary/head to the absorbing Di4C shape; Zenodo SDTT files are forbidden substitutes.
   duo_di4c_owt:
@@ -263,6 +264,7 @@ recipes:
       --output checkpoints/reference_reproduction/duo_di4c/owt
       --upstream-override is_di4c=true
     output: checkpoints/reference_reproduction/duo_di4c/owt
+    sampling_checkpoint: student_checkpoints/50000.ckpt
     prerequisites: [duo_raw_owt_drive]
     note: Task 12's repository wrapper must adapt the uniform Duo vocabulary/head to the absorbing Di4C shape; never relabel the masked-teacher Zenodo checkpoint.
   mdlm_sdtt_lm1b:
@@ -279,6 +281,8 @@ recipes:
       --teacher-checkpoint checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_MDLM_.ckpt
       --output checkpoints/reference_reproduction/mdlm_sdtt/lm1b
     output: checkpoints/reference_reproduction/mdlm_sdtt/lm1b
+    sampling_checkpoint: student_checkpoints/70000.ckpt
+    sampling_config: config.yaml
     prerequisites: [flm_lm1b_reproductions]
     note: Task 12's repository wrapper must adapt the BERT masked teacher to the absorbing SDTT shape; the upstream loader is not shape-compatible directly.
   mdlm_di4c_lm1b:
@@ -296,6 +300,7 @@ recipes:
       --output checkpoints/reference_reproduction/mdlm_di4c/lm1b
       --upstream-override is_di4c=true
     output: checkpoints/reference_reproduction/mdlm_di4c/lm1b
+    sampling_checkpoint: student_checkpoints/20000.ckpt
     prerequisites: [flm_lm1b_reproductions]
     note: Task 12's repository wrapper must adapt the BERT masked teacher to the absorbing Di4C shape; Zenodo contains OWT students only.
 coverage:

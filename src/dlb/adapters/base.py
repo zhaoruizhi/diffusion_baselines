@@ -28,6 +28,7 @@ class CheckpointSelection:
     teacher_family: str
     source: str
     required_files: tuple[str, ...] = ()
+    config_path: Path | None = None
 
 
 class BaseTeacherAdapter:
@@ -413,12 +414,34 @@ class BaseTeacherAdapter:
             raise AdapterError(
                 f"checkpoint teacher family {recipe.teacher_family!r} does not match {expected_family!r}"
             )
-        output = (root / recipe.output).resolve()
-        path = output if dry_run else self._select_recipe_checkpoint(output)
+        output = (root / recipe.output).absolute()
+        if recipe.sampling_checkpoint is not None:
+            path = (output / recipe.sampling_checkpoint).absolute()
+            if not dry_run:
+                relative = Path(recipe.sampling_checkpoint)
+                ancestors = [output]
+                current = output
+                for part in relative.parts[:-1]:
+                    current = current / part
+                    ancestors.append(current)
+                if (
+                    any(ancestor.is_symlink() for ancestor in ancestors)
+                    or path.is_symlink()
+                    or not path.is_file()
+                    or path.stat().st_size <= 0
+                ):
+                    raise AdapterError(
+                        f"recipe sampling checkpoint is missing or unsafe: {path}"
+                    )
+        else:
+            path = output if dry_run else self._select_recipe_checkpoint(output)
         return CheckpointSelection(
             path=path,
             teacher_family=recipe.teacher_family,
             source=f"recipe:{recipe_id}",
+            config_path=(output / recipe.sampling_config).absolute()
+            if recipe.sampling_config is not None
+            else None,
         )
 
     def _require_resource_checkpoint(
