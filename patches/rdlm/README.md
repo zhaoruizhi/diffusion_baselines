@@ -39,7 +39,12 @@ is removed by stable prefix before capture publication. The pinned upstream
 tree remains unchanged.
 
 The wrapper captures the texts and post-shift upstream token IDs returned by
-the real `find_bos_and_shift_fn`. Exact 128-token rows are preserved. If BOS
+the real `find_bos_and_shift_fn`. It also cross-checks the LM1B tokenizer and
+revision in `artifacts/data.yaml` against `data/manifests/downloads.json` and
+forces RDLM's `data.get_tokenizer` constructors to load that immutable local
+BERT snapshot with `local_files_only=True` under Hugging Face offline mode.
+The upstream movable `"bert-base-uncased"` alias cannot initiate a network or
+moving-revision fallback. Exact 128-token rows are preserved. If BOS
 alignment makes an upstream row shorter, conversion honestly retokenizes the
 captured text with the locally cached, revision-pinned BERT tokenizer using
 explicit max-length padding/truncation metadata. Output count is always exact;

@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import builtins
+from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib
 import importlib.util
+import json
 import math
+import os
 from pathlib import Path
 import sys
 from types import ModuleType
 from typing import Callable
+
+import yaml
 
 from dlb.io import atomic_json_write
 
@@ -23,6 +28,17 @@ class CaptureInvocation:
     expected_samples: int | None = None
     saved_config_path: Path | None = None
     saved_sde_path: Path | None = None
+    data_config_path: Path | None = None
+    downloads_manifest_path: Path | None = None
+    dataset_id: str | None = None
+    tokenizer_snapshot: Path | None = None
+
+
+@dataclass(frozen=True)
+class TokenizerBinding:
+    tokenizer_id: str
+    revision: str
+    snapshot: Path
 
 
 def _split_arguments(argv: list[str]) -> tuple[CaptureInvocation, list[str]]:
@@ -39,6 +55,10 @@ def _split_arguments(argv: list[str]) -> tuple[CaptureInvocation, list[str]]:
         "--expected-samples",
         "--saved-config-path",
         "--saved-sde-path",
+        "--data-config-path",
+        "--downloads-manifest-path",
+        "--dataset-id",
+        "--tokenizer-snapshot",
     }
     values: dict[str, str] = {}
     for argument in wrapper:
@@ -81,10 +101,34 @@ def _split_arguments(argv: list[str]) -> tuple[CaptureInvocation, list[str]]:
         if "--saved-sde-path" in values
         else None
     )
+    data_config_path = (
+        Path(values["--data-config-path"])
+        if "--data-config-path" in values
+        else None
+    )
+    downloads_manifest_path = (
+        Path(values["--downloads-manifest-path"])
+        if "--downloads-manifest-path" in values
+        else None
+    )
+    dataset_id = values.get("--dataset-id")
+    tokenizer_snapshot = (
+        Path(values["--tokenizer-snapshot"])
+        if "--tokenizer-snapshot" in values
+        else None
+    )
     if kind in {"langflow", "rdlm"} and expected_samples is None:
         raise ValueError(f"{kind} capture requires an expected sample count")
     if kind == "rdlm" and (saved_config_path is None or saved_sde_path is None):
         raise ValueError("RDLM capture requires saved config and SDE paths")
+    tokenizer_fields = (
+        data_config_path,
+        downloads_manifest_path,
+        dataset_id,
+        tokenizer_snapshot,
+    )
+    if kind in {"langflow", "rdlm"} and any(value is None for value in tokenizer_fields):
+        raise ValueError(f"{kind} capture requires a locked tokenizer snapshot")
     return (
         CaptureInvocation(
             entrypoint=entrypoint,
@@ -93,9 +137,79 @@ def _split_arguments(argv: list[str]) -> tuple[CaptureInvocation, list[str]]:
             expected_samples=expected_samples,
             saved_config_path=saved_config_path,
             saved_sde_path=saved_sde_path,
+            data_config_path=data_config_path,
+            downloads_manifest_path=downloads_manifest_path,
+            dataset_id=dataset_id,
+            tokenizer_snapshot=tokenizer_snapshot,
         ),
         forwarded,
     )
+
+
+def _require_absolute_file(path: Path | None, label: str) -> Path:
+    if path is None or not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} is missing or unsafe: {path}")
+    return path
+
+
+def _load_tokenizer_binding(invocation: CaptureInvocation) -> TokenizerBinding:
+    """Resolve one local snapshot against both immutable project data records."""
+
+    config_path = _require_absolute_file(invocation.data_config_path, "data config")
+    downloads_path = _require_absolute_file(
+        invocation.downloads_manifest_path, "download manifest"
+    )
+    try:
+        configuration = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        downloads = json.loads(downloads_path.read_text(encoding="utf-8"))
+        dataset = configuration["datasets"][invocation.dataset_id]
+        tokenizer_id = dataset["tokenizer"]
+        revision = configuration["models"][tokenizer_id]
+        record = downloads["models"][tokenizer_id]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError("locked tokenizer metadata is invalid") from error
+    if downloads.get("schema_version") != 1:
+        raise ValueError("download manifest schema is not supported")
+    if not isinstance(tokenizer_id, str) or not isinstance(revision, str) or len(revision) != 40:
+        raise ValueError("data config tokenizer binding is invalid")
+    if record.get("repo_id") != tokenizer_id or record.get("revision") != revision:
+        raise ValueError("download manifest tokenizer binding differs from data config")
+    recorded_snapshot = record.get("snapshot_path")
+    if not isinstance(recorded_snapshot, str) or not recorded_snapshot:
+        raise ValueError("download manifest tokenizer snapshot is missing")
+    snapshot_path = Path(recorded_snapshot)
+    if not snapshot_path.is_absolute():
+        snapshot_path = config_path.parents[1] / snapshot_path
+    requested_snapshot = invocation.tokenizer_snapshot
+    if requested_snapshot is None or not requested_snapshot.is_absolute():
+        raise ValueError("tokenizer snapshot path must be absolute")
+    if requested_snapshot != snapshot_path:
+        raise ValueError("capture tokenizer snapshot differs from download manifest")
+    parts = snapshot_path.parts
+    try:
+        recorded_revision = parts[parts.index("snapshots") + 1]
+    except (ValueError, IndexError) as error:
+        raise ValueError("download manifest tokenizer snapshot path is invalid") from error
+    if recorded_revision != revision:
+        raise ValueError("download manifest tokenizer snapshot revision differs from data config")
+    if snapshot_path.is_symlink() or not snapshot_path.is_dir():
+        raise ValueError(f"locked tokenizer snapshot is missing or unsafe: {snapshot_path}")
+    return TokenizerBinding(tokenizer_id, revision, snapshot_path)
+
+
+@contextmanager
+def _offline_huggingface():
+    names = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    previous = {name: os.environ.get(name) for name in names}
+    os.environ.update({name: "1" for name in names})
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def _load_entrypoint(path: Path) -> ModuleType:
@@ -177,7 +291,10 @@ def _capture_teacher(
 
 
 def _capture_langflow(
-    module: ModuleType, invocation: CaptureInvocation, forwarded: list[str]
+    module: ModuleType,
+    invocation: CaptureInvocation,
+    forwarded: list[str],
+    tokenizer: TokenizerBinding,
 ) -> None:
     owner = getattr(module, "LangFlow", None)
     auto_tokenizer = getattr(module, "AutoTokenizer", None)
@@ -210,11 +327,16 @@ def _capture_langflow(
     class AutoTokenizerProxy:
         @staticmethod
         def from_pretrained(*args, **kwargs):
-            return TokenizerProxy(auto_tokenizer.from_pretrained(*args, **kwargs))
+            del args
+            kwargs.pop("revision", None)
+            kwargs["local_files_only"] = True
+            loaded = auto_tokenizer.from_pretrained(str(tokenizer.snapshot), **kwargs)
+            return TokenizerProxy(loaded)
 
     owner.generate_samples = generate
     module.AutoTokenizer = AutoTokenizerProxy
-    _run_main(module, invocation.entrypoint, forwarded)
+    with _offline_huggingface():
+        _run_main(module, invocation.entrypoint, forwarded)
     _write_capture(
         invocation.capture_path,
         texts,
@@ -280,6 +402,7 @@ def _capture_rdlm(
 ) -> None:
     from omegaconf import OmegaConf
 
+    tokenizer = _load_tokenizer_binding(invocation)
     saved_config_path = _require_saved_file(invocation.saved_config_path, "config")
     saved_sde_path = _require_saved_file(invocation.saved_sde_path, "SDE")
     checkpoint_path = _model_path(forwarded)
@@ -295,6 +418,12 @@ def _capture_rdlm(
         raise ValueError("saved RDLM config is not the LM1B training config")
 
     run_sample = importlib.import_module("run_sample")
+    data_module = getattr(run_sample, "data", None)
+    transformers_module = getattr(data_module, "transformers", None)
+    original_bert_tokenizer = getattr(transformers_module, "BertTokenizer", None)
+    original_auto_tokenizer = getattr(data_module, "AutoTokenizer", None)
+    if original_bert_tokenizer is None or original_auto_tokenizer is None:
+        raise ValueError("RDLM data module lacks its tokenizer constructors")
     original_torch = run_sample.torch
     original_open: Callable[..., object] = builtins.open
     original_tqdm = run_sample.tqdm
@@ -305,6 +434,17 @@ def _capture_rdlm(
     saved_config_used = False
     saved_sde_opened = False
     saved_sde_used = False
+
+    def locked_tokenizer_proxy(original):
+        class LocalTokenizerProxy:
+            @staticmethod
+            def from_pretrained(*args, **kwargs):
+                del args
+                kwargs.pop("revision", None)
+                kwargs["local_files_only"] = True
+                return original.from_pretrained(str(tokenizer.snapshot), **kwargs)
+
+        return LocalTokenizerProxy
 
     class TorchProxy:
         def __getattr__(self, name: str) -> object:
@@ -359,12 +499,17 @@ def _capture_rdlm(
         return function(0, *args)
 
     run_sample.torch = TorchProxy()
+    data_module.transformers.BertTokenizer = locked_tokenizer_proxy(
+        original_bert_tokenizer
+    )
+    data_module.AutoTokenizer = locked_tokenizer_proxy(original_auto_tokenizer)
     run_sample.open = routed_open
     run_sample.tqdm = exact_sample_batches
     run_sample.instantiate = instantiate
     run_sample.sutils.find_bos_and_shift_fn = capture_shift_factory
     module.mp.spawn = inline_spawn
-    _run_main(module, invocation.entrypoint, forwarded)
+    with _offline_huggingface():
+        _run_main(module, invocation.entrypoint, forwarded)
     if not saved_config_used:
         raise ValueError("saved RDLM config was not used")
     if not saved_sde_opened or not saved_sde_used:
@@ -387,7 +532,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     module = _load_entrypoint(invocation.entrypoint)
     if invocation.kind == "langflow":
-        _capture_langflow(module, invocation, forwarded)
+        tokenizer = _load_tokenizer_binding(invocation)
+        _capture_langflow(module, invocation, forwarded, tokenizer)
     elif invocation.kind == "rdlm":
         _capture_rdlm(module, invocation, forwarded)
     else:

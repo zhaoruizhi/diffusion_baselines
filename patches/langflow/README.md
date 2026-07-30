@@ -23,7 +23,12 @@ The shared `dlb.adapters.capture` process observes the token tensor returned by
 the real `LangFlow.generate_samples` method and the text returned by the real
 tokenizer. It writes `upstream_token_ids.json` using
 `dlb-upstream-token-capture-v1`; conversion does not parse the upstream text
-file's human-oriented sample delimiters. Conversion requires exactly the
+file's human-oriented sample delimiters. Before upstream execution, the
+wrapper cross-checks the OWT tokenizer and revision in `artifacts/data.yaml`
+against `data/manifests/downloads.json`, requires that manifest's immutable
+local snapshot directory, and replaces the upstream movable `"gpt2"` request
+with that path plus `local_files_only=True` under Hugging Face offline mode.
+There is no network or moving-revision fallback. Conversion requires exactly the
 requested number of 1024-token rows and validates Task 7's runner-resolved
 checkpoint digest, lock ID, selection, and `continuous_langflow` family before
 reading the capture.

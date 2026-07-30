@@ -3,11 +3,13 @@
 from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 import dlb.adapters.capture as capture_module
 from dlb.adapters.base import AdapterError
@@ -143,6 +145,49 @@ def write_capture(path: Path, count: int, length: int) -> None:
     )
 
 
+def prepare_tokenizer_binding(
+    root: Path, dataset: str
+) -> tuple[Path, Path, Path]:
+    """Create the minimal immutable tokenizer lock consumed by capture tests."""
+
+    data_config = root / "artifacts" / "data.yaml"
+    data_config.parent.mkdir(parents=True, exist_ok=True)
+    data_config.write_text(
+        (ROOT / "artifacts/data.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    document = yaml.safe_load(data_config.read_text(encoding="utf-8"))
+    tokenizer_id = document["datasets"][dataset]["tokenizer"]
+    revision = document["models"][tokenizer_id]
+    snapshot = (
+        root
+        / "locked-tokenizers"
+        / f"models--{tokenizer_id}"
+        / "snapshots"
+        / revision
+    )
+    snapshot.mkdir(parents=True)
+    downloads = root / "data/manifests/downloads.json"
+    downloads.parent.mkdir(parents=True)
+    downloads.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "models": {
+                    tokenizer_id: {
+                        "repo_id": tokenizer_id,
+                        "revision": revision,
+                        "snapshot_path": snapshot.relative_to(root).as_posix(),
+                        "size_bytes": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return data_config, downloads, snapshot
+
+
 def test_registry_exposes_only_the_two_supported_continuous_cells() -> None:
     """Catch either unsupported cell being silently substituted by another model."""
 
@@ -163,6 +208,16 @@ def test_langflow_renders_the_pinned_inference_argparse_contract() -> None:
     assert command[1:3] == ["-B", "-u"]
     assert Path(override(command, "--upstream-entrypoint")) == ROOT / "upstreams/langflow/inference.py"
     assert override(command, "--capture-kind") == "langflow"
+    assert Path(override(command, "--data-config-path")) == ROOT / "artifacts/data.yaml"
+    assert Path(override(command, "--downloads-manifest-path")) == (
+        ROOT / "data/manifests/downloads.json"
+    )
+    assert override(command, "--dataset-id") == "owt"
+    assert Path(override(command, "--tokenizer-snapshot")) == (
+        ROOT
+        / "data/raw/huggingface/hub/models--gpt2/snapshots"
+        / "607a30d783dfa663caf39e06633721c8d4cfcd7e"
+    )
     checkpoint = Path(option(command, "--checkpoint"))
     assert checkpoint == ROOT / "checkpoints/official/langflow/owt/model.safetensors"
     assert option(command, "--num_samples") == "17"
@@ -183,6 +238,16 @@ def test_rdlm_renders_the_official_sde_sampler_and_saved_asset_trio() -> None:
     assert command[1:3] == ["-B", "-u"]
     assert Path(override(command, "--upstream-entrypoint")) == ROOT / "upstreams/rdlm/main.py"
     assert override(command, "--capture-kind") == "rdlm"
+    assert Path(override(command, "--data-config-path")) == ROOT / "artifacts/data.yaml"
+    assert Path(override(command, "--downloads-manifest-path")) == (
+        ROOT / "data/manifests/downloads.json"
+    )
+    assert override(command, "--dataset-id") == "lm1b"
+    assert Path(override(command, "--tokenizer-snapshot")) == (
+        ROOT
+        / "data/raw/huggingface/hub/models--bert-base-uncased/snapshots"
+        / "86b5e0934494bd15c9632b12f734a8a67f723594"
+    )
     assert Path(override(command, "--saved-config-path")) == asset_root / "config.yaml"
     assert Path(override(command, "--saved-sde-path")) == asset_root / "sde.pkl"
     assert override(command, "--expected-samples") == "17"
@@ -308,13 +373,18 @@ def test_rdlm_retokenizes_variable_upstream_rows_offline_and_records_why(
     assert metadata["token_ids_transformation"]["reason"] == "upstream_ids_not_canonical_length"
 
 
-def test_shared_capture_runs_langflow_and_records_returned_ids(tmp_path: Path) -> None:
-    """Catch LangFlow conversion depending on parsing its delimiter-based text file."""
+def test_shared_capture_runs_langflow_with_locked_offline_tokenizer_and_records_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch LangFlow resolving its movable GPT-2 alias or parsing its text file."""
 
+    data_config, downloads, tokenizer_snapshot = prepare_tokenizer_binding(tmp_path, "owt")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     entrypoint = tmp_path / "inference.py"
-    entrypoint.write_text(
-        """
+    source = """
 import argparse
+import os
 
 class Rows:
     def __init__(self, rows): self.rows = rows
@@ -332,7 +402,12 @@ class Tokenizer:
 
 class AutoTokenizer:
     @staticmethod
-    def from_pretrained(name): return Tokenizer()
+    def from_pretrained(name, **settings):
+        assert name == __SNAPSHOT__
+        assert settings == {'local_files_only': True}
+        assert os.environ['HF_HUB_OFFLINE'] == '1'
+        assert os.environ['TRANSFORMERS_OFFLINE'] == '1'
+        return Tokenizer()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -343,8 +418,9 @@ def main():
     texts = AutoTokenizer.from_pretrained('fixture').batch_decode(rows)
     with open(args.output, 'w', encoding='utf-8') as handle:
         handle.write('\\n'.join(texts))
-""",
-        encoding="utf-8",
+"""
+    entrypoint.write_text(
+        source.replace("__SNAPSHOT__", repr(str(tokenizer_snapshot))), encoding="utf-8"
     )
     capture_path = tmp_path / "capture.json"
     output_path = tmp_path / "samples.txt"
@@ -355,6 +431,10 @@ def main():
             f"--capture-path={capture_path}",
             "--capture-kind=langflow",
             "--expected-samples=2",
+            f"--data-config-path={data_config}",
+            f"--downloads-manifest-path={downloads}",
+            "--dataset-id=owt",
+            f"--tokenizer-snapshot={tokenizer_snapshot}",
             "--",
             "--num_samples",
             "2",
@@ -365,6 +445,8 @@ def main():
     capture = json.loads(capture_path.read_text())
 
     assert result == 0
+    assert "HF_HUB_OFFLINE" not in os.environ
+    assert "TRANSFORMERS_OFFLINE" not in os.environ
     assert output_path.read_text() == "text 0\ntext 1"
     assert capture == {
         "schema": "dlb-upstream-token-capture-v1",
@@ -378,8 +460,11 @@ def main():
 def test_rdlm_capture_routes_saved_assets_and_uses_bounded_exact_batches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Catch the pinned eight-sample loop or fallback SDE silently replacing requested assets."""
+    """Catch movable tokenizers, fixed batches, or fallback assets replacing locked inputs."""
 
+    data_config, downloads, tokenizer_snapshot = prepare_tokenizer_binding(tmp_path, "lm1b")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     saved_config = tmp_path / "config.yaml"
     saved_config.write_text("model:\n  length: 128\ndata:\n  train: lm1b\n", encoding="utf-8")
     saved_sde = tmp_path / "sde.pkl"
@@ -419,9 +504,32 @@ def test_rdlm_capture_routes_saved_assets_and_uses_bounded_exact_batches(
 
             return shift
 
+    class FakeBertTokenizer:
+        @staticmethod
+        def from_pretrained(name, **settings):
+            assert name == str(tokenizer_snapshot)
+            assert settings == {"local_files_only": True}
+            assert os.environ["HF_HUB_OFFLINE"] == "1"
+            assert os.environ["TRANSFORMERS_OFFLINE"] == "1"
+            return object()
+
+    fake_data = SimpleNamespace(
+        transformers=SimpleNamespace(BertTokenizer=FakeBertTokenizer),
+        AutoTokenizer=FakeBertTokenizer,
+    )
+
+    def get_tokenizer(dataset):
+        assert dataset == "lm1b"
+        return fake_data.transformers.BertTokenizer.from_pretrained(
+            "bert-base-uncased"
+        )
+
+    fake_data.get_tokenizer = get_tokenizer
+
     fake_run_sample = SimpleNamespace(
         torch=FakeTorch(),
         sutils=FakeSeqUtils(),
+        data=fake_data,
         tqdm=lambda iterable, **kwargs: iterable,
         instantiate=lambda config, **kwargs: (config, kwargs),
     )
@@ -457,6 +565,7 @@ def test_rdlm_capture_routes_saved_assets_and_uses_bounded_exact_batches(
 
         def worker(rank, marker):
             assert rank == 0 and marker == "worker"
+            run_sample.data.get_tokenizer("lm1b")
             state = run_sample.torch.load(checkpoint)
             assert state["config"].model.length == 128
             with run_sample.open(tmp_path / "wrong" / "sde.pkl", "rb") as handle:
@@ -490,6 +599,10 @@ def test_rdlm_capture_routes_saved_assets_and_uses_bounded_exact_batches(
         expected_samples=2,
         saved_config_path=saved_config,
         saved_sde_path=saved_sde,
+        data_config_path=data_config,
+        downloads_manifest_path=downloads,
+        dataset_id="lm1b",
+        tokenizer_snapshot=tokenizer_snapshot,
     )
 
     capture_module._capture_rdlm(
@@ -501,6 +614,8 @@ def test_rdlm_capture_routes_saved_assets_and_uses_bounded_exact_batches(
 
     assert [sample["text"] for sample in capture["samples"]] == ["one", "two"]
     assert capture["samples"][1]["token_ids"] == [2] * 128
+    assert "HF_HUB_OFFLINE" not in os.environ
+    assert "TRANSFORMERS_OFFLINE" not in os.environ
 
 
 def test_continuous_cli_dry_run_emits_two_commands_and_two_registry_rejections(

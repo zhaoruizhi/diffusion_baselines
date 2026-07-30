@@ -50,6 +50,18 @@ class RDLMAdapter(BaseTeacherAdapter):
             raise AdapterError(f"pinned upstream entrypoint is missing or unsafe: {entrypoint}")
         capture_path = run_dir.resolve() / "upstream_token_ids.json"
         hydra_dir = run_dir.resolve() / "upstream_hydra"
+        tokenizer_name = self._load_data_contract(root, request.dataset_id)["tokenizer"]
+        tokenizer_revision = self._tokenizer_revision(root, tokenizer_name)
+        tokenizer_snapshot = (
+            root
+            / "data"
+            / "raw"
+            / "huggingface"
+            / "hub"
+            / f"models--{tokenizer_name}"
+            / "snapshots"
+            / tokenizer_revision
+        )
         arguments = [
             sys.executable,
             "-B",
@@ -62,6 +74,10 @@ class RDLMAdapter(BaseTeacherAdapter):
             f"--saved-config-path={saved_config}",
             f"--saved-sde-path={saved_sde}",
             f"--expected-samples={request.sample_count}",
+            f"--data-config-path={root / 'artifacts' / 'data.yaml'}",
+            f"--downloads-manifest-path={root / 'data' / 'manifests' / 'downloads.json'}",
+            f"--dataset-id={request.dataset_id}",
+            f"--tokenizer-snapshot={tokenizer_snapshot}",
             "--",
             "run_mode=sample",
             "server=sample",
