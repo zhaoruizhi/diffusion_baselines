@@ -1,0 +1,4 @@
+{"generation_seconds":0.01,"sample_id":0,"seed":42,"text":"the small cat sat here","token_ids":[101,10,11,12,102]}
+{"generation_seconds":0.01,"sample_id":1,"seed":42,"text":"the quick dog ran there","token_ids":[101,10,13,14,102]}
+{"generation_seconds":0.01,"sample_id":2,"seed":42,"text":"bright birds fly over trees","token_ids":[101,15,16,17,102]}
+{"generation_seconds":0.01,"sample_id":3,"seed":42,"text":"quiet fish swim under water","token_ids":[101,18,19,20,102]}
