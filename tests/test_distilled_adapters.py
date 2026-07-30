@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import re
 import sys
 from types import SimpleNamespace
 
@@ -257,6 +258,13 @@ class FakeTokenizer:
         return [f"decoded {row[0]}" for row in rows]
 
 
+class ResolverGuardedDict(dict):
+    """Model an OmegaConf tree whose unrelated custom resolvers cannot run."""
+
+    def items(self):
+        raise RuntimeError("unregistered resolver device_count must not be evaluated")
+
+
 def test_sampling_runtime_streams_exact_batches_and_atomically_publishes(tmp_path: Path) -> None:
     runtime = load_runtime_module()
     model = FakeModel(length=8)
@@ -411,6 +419,126 @@ def test_embedded_config_must_match_manifest_selected_architecture() -> None:
 
     with pytest.raises(ValueError, match="model.n_blocks"):
         runtime.validate_embedded_config(authoritative, mismatched)
+
+
+def complete_di4c_sampling_config() -> dict[str, object]:
+    config = yaml.safe_load(
+        (ROOT / "configs/sampling/di4c_mdlm_owt.yaml").read_text(encoding="utf-8")
+    )
+    assert isinstance(config, dict)
+    return config
+
+
+def test_config_validation_selects_only_sampling_fields_and_standard_references() -> None:
+    runtime = load_runtime_module()
+    config = complete_di4c_sampling_config()
+    config["data_preprocess"]["seq_len"] = "${model.length}"
+    config["trainer"] = {"devices": "${device_count:}"}
+    config["loader"] = {
+        "batch_size": "${div_up:${loader.global_batch_size},${trainer.devices}}"
+    }
+    guarded = ResolverGuardedDict(config)
+    binding = runtime.TokenizerBinding("gpt2", "a" * 40, Path("/locked/gpt2"))
+
+    runtime.validate_sampling_config(
+        guarded,
+        binding=binding,
+        sequence_length=1024,
+        require_di4c=True,
+    )
+    runtime.validate_embedded_config(guarded, ResolverGuardedDict(config))
+
+
+def test_real_omegaconf_validation_ignores_unregistered_unrelated_resolvers() -> None:
+    OmegaConf = pytest.importorskip("omegaconf").OmegaConf
+    runtime = load_runtime_module()
+    for name in ("device_count", "div_up", "eval", "cwd"):
+        OmegaConf.clear_resolver(name)
+    config = complete_di4c_sampling_config()
+    config["data_preprocess"]["seq_len"] = "${model.length}"
+    config["trainer"] = {"devices": "${device_count:}"}
+    config["loader"] = {
+        "global_batch_size": 16,
+        "batch_size": "${div_up:${loader.global_batch_size},${trainer.devices}}",
+    }
+    config["checkpointing"] = {"save_dir": "${cwd:}"}
+    config["eval"] = {"batches": "${eval:1 + 1}"}
+    authoritative = OmegaConf.create(config)
+    embedded = OmegaConf.create(config)
+    binding = runtime.TokenizerBinding("gpt2", "a" * 40, Path("/locked/gpt2"))
+
+    runtime.validate_sampling_config(
+        authoritative,
+        binding=binding,
+        sequence_length=1024,
+        require_di4c=True,
+    )
+    runtime.validate_embedded_config(authoritative, embedded)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "T",
+        "time_conditioning",
+        "model.type",
+        "model.hidden_size",
+        "model.cond_dim",
+        "model.length",
+        "model.n_blocks",
+        "model.n_heads",
+        "model.scale_by_sigma",
+        "model.dropout",
+        "model.tie_word_embeddings",
+        "model.causal",
+        "noise.type",
+        "noise.sigma_min",
+        "noise.sigma_max",
+        "training.ema",
+        "training.antithetic_sampling",
+        "training.importance_sampling",
+        "training.sampling_eps",
+        "training.change_of_variables",
+        "tokenizer.name",
+        "parameterization.name",
+        "parameterization.log_loss_buckets",
+        "parameterization.start_from_hf",
+        "parameterization.distill_mode",
+        "parameterization.num_distill_steps",
+        "parameterization.min_num_sampling_steps",
+        "parameterization.grow_dt_every",
+        "parameterization.orig_num_sampling_steps",
+        "parameterization.sampling_mode",
+        "parameterization.loss_precision",
+        "parameterization.reset_optimizer_on_growth",
+        "parameterization.use_ema_on_growth",
+        "is_di4c",
+    ],
+)
+def test_every_constructor_and_sampler_field_must_match_embedded_config(
+    field: str,
+) -> None:
+    runtime = load_runtime_module()
+    authoritative = complete_di4c_sampling_config()
+    authoritative["model"]["causal"] = False
+    embedded = json.loads(json.dumps(authoritative))
+    cursor = embedded
+    components = field.split(".")
+    for component in components[:-1]:
+        cursor = cursor[component]
+    value = cursor[components[-1]]
+    if isinstance(value, bool):
+        replacement = not value
+    elif isinstance(value, (int, float)):
+        replacement = value + 1
+    elif value is None:
+        replacement = "different"
+    else:
+        replacement = f"{value}-different"
+    cursor[components[-1]] = replacement
+
+    with pytest.raises(ValueError, match=re.escape(field)):
+        runtime.validate_embedded_config(authoritative, embedded)
 
 
 def test_tokenizer_binding_cross_checks_data_and_download_manifests(tmp_path: Path) -> None:

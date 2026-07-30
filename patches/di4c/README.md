@@ -15,5 +15,8 @@ The official Zenodo `sdtt7-di4c2.ckpt` is bound exclusively to the masked-MDLM
 teacher family. Duo+Di4C is always `uniform_duo` and must come from Task 12's
 separate recipe outputs. The manifest selects the 20k LM1B and 50k OWT
 intermediate checkpoints, so the adapter never searches for or guesses a weight.
-Each Task 12 recipe must also publish its fully resolved `config.yaml`; the
+Each Task 12 recipe must also publish its fully composed `config.yaml`; the
 manifest-selected config remains authoritative at sampling time.
+Config checks select only constructor/sampler fields and resolve direct standard
+references such as `${model.length}`; unrelated trainer/loader custom resolvers
+are never evaluated by the wrapper.

@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -145,40 +146,61 @@ def checkpoint_state(
     return dict(state), config
 
 
-def _plain_config(value: object) -> object:
+_MISSING = object()
+_STANDARD_REFERENCE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_.]*)\}$")
+
+
+def _select_config_value(
+    config: object, path: str, references: frozenset[str] = frozenset()
+) -> object:
+    """Resolve one selected scalar without walking unrelated Hydra config nodes."""
+
     try:
         from omegaconf import OmegaConf
 
-        if OmegaConf.is_config(value):
-            return OmegaConf.to_container(value, resolve=True)
+        if OmegaConf.is_config(config):
+            try:
+                return OmegaConf.select(
+                    config,
+                    path,
+                    default=_MISSING,
+                    throw_on_resolution_failure=True,
+                )
+            except Exception as error:
+                raise ValueError(
+                    f"sampling config field {path} cannot be resolved"
+                ) from error
     except ImportError:
         pass
-    if isinstance(value, Mapping):
-        return {str(key): _plain_config(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain_config(item) for item in value]
+    value = config
+    for component in path.split("."):
+        try:
+            value = (
+                value[component]
+                if isinstance(value, Mapping)
+                else getattr(value, component)
+            )
+        except (AttributeError, KeyError, TypeError):
+            return _MISSING
+    if isinstance(value, str):
+        reference = _STANDARD_REFERENCE.fullmatch(value)
+        if reference is not None:
+            target = reference.group(1)
+            if target in references or target == path:
+                raise ValueError(f"sampling config has a cyclic reference at {path}")
+            return _select_config_value(config, target, references | {path})
     return value
 
 
 def _nested(config: object, path: str) -> object:
-    value = _plain_config(config)
-    for component in path.split("."):
-        if not isinstance(value, dict) or component not in value:
-            raise ValueError(f"sampling config is missing required field {path}")
-        value = value[component]
+    value = _select_config_value(config, path)
+    if value is _MISSING:
+        raise ValueError(f"sampling config is missing required field {path}")
     return value
-
-
-_MISSING = object()
 
 
 def _optional_nested(config: object, path: str) -> object:
-    value = _plain_config(config)
-    for component in path.split("."):
-        if not isinstance(value, dict) or component not in value:
-            return _MISSING
-        value = value[component]
-    return value
+    return _select_config_value(config, path)
 
 
 _CHECKPOINT_CONFIG_FIELDS = (
@@ -192,7 +214,10 @@ _CHECKPOINT_CONFIG_FIELDS = (
     "model.n_heads",
     "model.scale_by_sigma",
     "model.dropout",
+    "model.tie_word_embeddings",
     "noise.type",
+    "noise.sigma_min",
+    "noise.sigma_max",
     "training.ema",
     "training.antithetic_sampling",
     "training.importance_sampling",
@@ -200,21 +225,26 @@ _CHECKPOINT_CONFIG_FIELDS = (
     "training.change_of_variables",
     "tokenizer.name",
     "parameterization.name",
+    "parameterization.log_loss_buckets",
+    "parameterization.start_from_hf",
     "parameterization.distill_mode",
     "parameterization.num_distill_steps",
     "parameterization.min_num_sampling_steps",
     "parameterization.grow_dt_every",
     "parameterization.orig_num_sampling_steps",
     "parameterization.sampling_mode",
+    "parameterization.loss_precision",
     "parameterization.reset_optimizer_on_growth",
     "parameterization.use_ema_on_growth",
 )
+
+_OPTIONAL_CHECKPOINT_CONFIG_FIELDS = ("model.causal", "is_di4c")
 
 
 def validate_embedded_config(authoritative: object, embedded: object | None) -> None:
     if embedded is None:
         raise ValueError("Lightning checkpoint does not embed its training config")
-    for path in (*_CHECKPOINT_CONFIG_FIELDS, "is_di4c"):
+    for path in (*_CHECKPOINT_CONFIG_FIELDS, *_OPTIONAL_CHECKPOINT_CONFIG_FIELDS):
         expected = _optional_nested(authoritative, path)
         if expected is _MISSING:
             continue

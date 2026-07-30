@@ -11,6 +11,8 @@ the tokenizer snapshot against both `artifacts/data.yaml` and the server-created
 download manifest.
 
 The LM1B cell is a Task 12 reference reproduction. Its manifest-selected sampling
-artifacts are `student_checkpoints/70000.ckpt` and a fully resolved `config.yaml`.
+artifacts are `student_checkpoints/70000.ckpt` and a fully composed `config.yaml`.
 Its Lightning config is checked against the manifest config before use. Absent,
 ambiguous, or provenance-mismatched bytes are rejected.
+Validation selects only constructor/sampler fields, so unresolved Hydra settings
+for trainers and loaders do not require or execute their custom resolvers.

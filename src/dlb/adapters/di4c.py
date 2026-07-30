@@ -10,7 +10,7 @@ from dlb.schema import SampleRecord
 
 
 class Di4CAdapter(BaseTeacherAdapter):
-    identity = "dlb.adapters.di4c:v2"
+    identity = "dlb.adapters.di4c:v3"
     upstream = "di4c"
     teacher_families = {
         "mdlm_di4c": "masked_mdlm",

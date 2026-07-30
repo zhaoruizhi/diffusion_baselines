@@ -10,7 +10,7 @@ from dlb.schema import SampleRecord
 
 
 class SDTTAdapter(BaseTeacherAdapter):
-    identity = "dlb.adapters.sdtt:v2"
+    identity = "dlb.adapters.sdtt:v3"
     upstream = "sdtt"
     supported_models = frozenset({"mdlm_sdtt"})
     teacher_families = {"mdlm_sdtt": "masked_mdlm"}
