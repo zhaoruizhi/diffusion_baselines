@@ -18,6 +18,7 @@ from typing import Callable
 import yaml
 
 from dlb.io import atomic_json_write
+from dlb.timing import benchmark_and_publish
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,9 @@ class CaptureInvocation:
     downloads_manifest_path: Path | None = None
     dataset_id: str | None = None
     tokenizer_snapshot: Path | None = None
+    benchmark_output: Path | None = None
+    benchmark_metadata: Path | None = None
+    benchmark_precision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,9 @@ def _split_arguments(argv: list[str]) -> tuple[CaptureInvocation, list[str]]:
         "--downloads-manifest-path",
         "--dataset-id",
         "--tokenizer-snapshot",
+        "--benchmark-output",
+        "--benchmark-metadata",
+        "--benchmark-precision",
     }
     values: dict[str, str] = {}
     for argument in wrapper:
@@ -117,6 +124,27 @@ def _split_arguments(argv: list[str]) -> tuple[CaptureInvocation, list[str]]:
         if "--tokenizer-snapshot" in values
         else None
     )
+    benchmark_output = (
+        Path(values["--benchmark-output"])
+        if "--benchmark-output" in values
+        else None
+    )
+    benchmark_metadata = (
+        Path(values["--benchmark-metadata"])
+        if "--benchmark-metadata" in values
+        else None
+    )
+    benchmark_precision = values.get("--benchmark-precision")
+    benchmark_fields = (benchmark_output, benchmark_metadata, benchmark_precision)
+    if any(value is not None for value in benchmark_fields) and not all(
+        value is not None for value in benchmark_fields
+    ):
+        raise ValueError("benchmark capture arguments must be provided together")
+    if benchmark_output is not None:
+        if not benchmark_output.is_absolute() or not benchmark_metadata.is_absolute():
+            raise ValueError("benchmark paths must be absolute")
+        if benchmark_precision != "author":
+            raise ValueError("benchmark precision is invalid")
     if kind in {"langflow", "rdlm"} and expected_samples is None:
         raise ValueError(f"{kind} capture requires an expected sample count")
     if kind == "rdlm" and (saved_config_path is None or saved_sde_path is None):
@@ -141,6 +169,9 @@ def _split_arguments(argv: list[str]) -> tuple[CaptureInvocation, list[str]]:
             downloads_manifest_path=downloads_manifest_path,
             dataset_id=dataset_id,
             tokenizer_snapshot=tokenizer_snapshot,
+            benchmark_output=benchmark_output,
+            benchmark_metadata=benchmark_metadata,
+            benchmark_precision=benchmark_precision,
         ),
         forwarded,
     )
@@ -271,6 +302,42 @@ def _capture_teacher(
     captured: list[dict[str, object]] = []
 
     def capture(self, *args, **kwargs):
+        if invocation.benchmark_output is not None:
+            num_steps = kwargs.get("num_steps", args[0] if args else None)
+            eps = kwargs.get("eps", 1e-5)
+            if type(num_steps) is not int or num_steps <= 0:
+                raise ValueError("benchmark sampler requires a positive num_steps")
+            if invocation.entrypoint.parent.name == "mdlm":
+                if self.ema:
+                    parameters = tuple(
+                        list(self.backbone.parameters()) + list(self.noise.parameters())
+                    )
+                    self.ema.store(parameters)
+                    self.ema.copy_to(parameters)
+                self.backbone.eval()
+                self.noise.eval()
+                generate_one = lambda: self._sample(num_steps=num_steps, eps=eps)
+            else:
+                self._eval_mode()
+                generate_one = lambda: self.generate_samples(
+                    num_samples=1, num_steps=num_steps, eps=eps
+                )
+            try:
+                return benchmark_and_publish(
+                    generate_one,
+                    model=self,
+                    output=invocation.benchmark_output,
+                    metadata_path=invocation.benchmark_metadata,
+                    precision=invocation.benchmark_precision,
+                )
+            finally:
+                if invocation.entrypoint.parent.name == "mdlm":
+                    if self.ema:
+                        self.ema.restore(parameters)
+                    self.backbone.train()
+                    self.noise.train()
+                else:
+                    self._train_mode()
         result = original(self, *args, **kwargs)
         token_rows = result.detach().cpu().tolist()
         text_rows = list(self.tokenizer.batch_decode(result))
@@ -305,7 +372,18 @@ def _capture_langflow(
     texts: list[object] = []
 
     def generate(self, *args, **kwargs):
-        result = original_generate(self, *args, **kwargs)
+        if invocation.benchmark_output is None:
+            result = original_generate(self, *args, **kwargs)
+        else:
+            benchmark_kwargs = dict(kwargs)
+            benchmark_kwargs["num_samples"] = 1
+            result = benchmark_and_publish(
+                lambda: original_generate(self, *args, **benchmark_kwargs),
+                model=self,
+                output=invocation.benchmark_output,
+                metadata_path=invocation.benchmark_metadata,
+                precision=invocation.benchmark_precision,
+            )
         rows = result.detach().cpu().tolist()
         if not isinstance(rows, list):
             raise ValueError("LangFlow sampler returned invalid token rows")
@@ -397,6 +475,31 @@ def _require_saved_file(path: Path | None, label: str) -> Path:
     return path
 
 
+def _rdlm_benchmark_sampling_fn(
+    sampling_fn: Callable[[object], object], invocation: CaptureInvocation
+) -> Callable[[object], object]:
+    """Publish one benchmark the first time RDLM reaches its loaded sampling_fn."""
+
+    if invocation.benchmark_output is None:
+        return sampling_fn
+    published = False
+
+    def sample(model: object) -> object:
+        nonlocal published
+        if published:
+            return sampling_fn(model)
+        published = True
+        return benchmark_and_publish(
+            lambda: sampling_fn(model),
+            model=model,
+            output=invocation.benchmark_output,
+            metadata_path=invocation.benchmark_metadata,
+            precision=invocation.benchmark_precision,
+        )
+
+    return sample
+
+
 def _capture_rdlm(
     module: ModuleType, invocation: CaptureInvocation, forwarded: list[str]
 ) -> None:
@@ -429,6 +532,11 @@ def _capture_rdlm(
     original_tqdm = run_sample.tqdm
     original_instantiate = run_sample.instantiate
     original_shift_factory = run_sample.sutils.find_bos_and_shift_fn
+    original_sampling_factory = (
+        run_sample.sampling.get_sampling_fn
+        if invocation.benchmark_output is not None
+        else None
+    )
     texts: list[object] = []
     token_rows: list[object] = []
     saved_config_used = False
@@ -481,6 +589,12 @@ def _capture_rdlm(
         del iterable
         return original_tqdm(range(sample_batches), *args, **kwargs)
 
+    def benchmark_sampling_factory(*args, **kwargs):
+        if original_sampling_factory is None:
+            raise ValueError("RDLM benchmark sampling factory is unavailable")
+        sampling_fn = original_sampling_factory(*args, **kwargs)
+        return _rdlm_benchmark_sampling_fn(sampling_fn, invocation)
+
     def capture_shift_factory(*args, **kwargs):
         shift = original_shift_factory(*args, **kwargs)
 
@@ -505,6 +619,8 @@ def _capture_rdlm(
     data_module.AutoTokenizer = locked_tokenizer_proxy(original_auto_tokenizer)
     run_sample.open = routed_open
     run_sample.tqdm = exact_sample_batches
+    if invocation.benchmark_output is not None:
+        run_sample.sampling.get_sampling_fn = benchmark_sampling_factory
     run_sample.instantiate = instantiate
     run_sample.sutils.find_bos_and_shift_fn = capture_shift_factory
     module.mp.spawn = inline_spawn

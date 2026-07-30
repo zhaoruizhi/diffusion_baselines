@@ -7,6 +7,7 @@ import argparse
 from pathlib import Path
 
 from _distilled_runtime import (
+    benchmark_model,
     configure_for_sampling,
     install_upstream,
     load_config,
@@ -47,7 +48,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--round", type=int, choices=(7,), required=True)
     parser.add_argument("--teacher-family", choices=("masked_mdlm",), required=True)
     parser.add_argument("--offline", type=parse_bool, required=True)
+    parser.add_argument("--benchmark-output", type=Path)
+    parser.add_argument("--benchmark-metadata", type=Path)
+    parser.add_argument("--benchmark-precision", choices=("author",))
     args = parser.parse_args(argv)
+    benchmark_values = (args.benchmark_output, args.benchmark_metadata, args.benchmark_precision)
+    if any(value is not None for value in benchmark_values) and not all(
+        value is not None for value in benchmark_values
+    ):
+        parser.error("benchmark arguments must be provided together")
 
     upstream = require_directory(args.upstream_root, "pinned SDTT source")
     require_file(upstream / "src/sdtt/main.py", "pinned SDTT entrypoint")
@@ -87,16 +96,27 @@ def main(argv: list[str] | None = None) -> int:
             state=state,
             strict=True,
         )
-        write_capture_atomic(
-            args.output,
-            model=model,
-            tokenizer=tokenizer,
-            sample_count=args.sample_count,
-            batch_size=args.batch_size,
-            num_steps=args.num_steps,
-            seq_len=args.seq_len,
-            sampler=args.sampler,
-        )
+        if args.benchmark_output is not None:
+            benchmark_model(
+                model=model,
+                output=args.benchmark_output,
+                metadata_path=args.benchmark_metadata,
+                precision=args.benchmark_precision,
+                num_steps=args.num_steps,
+                seq_len=args.seq_len,
+                sampler=args.sampler,
+            )
+        else:
+            write_capture_atomic(
+                args.output,
+                model=model,
+                tokenizer=tokenizer,
+                sample_count=args.sample_count,
+                batch_size=args.batch_size,
+                num_steps=args.num_steps,
+                seq_len=args.seq_len,
+                sampler=args.sampler,
+            )
     return 0
 
 

@@ -57,6 +57,95 @@ class BaseTeacherAdapter:
 
         return self.render_command(request, run_dir, dry_run=False)
 
+    def benchmark_hook(self, request: RunRequest) -> str:
+        """Name the concrete loaded-model sampling boundary used on the server."""
+
+        del request
+        return {
+            "mdlm": "mdlm._sample",
+            "langflow": "langflow.generate_samples",
+            "rdlm": "rdlm.sampling_fn",
+            "sdtt": "distilled.model.sample",
+            "di4c": "distilled.model.sample",
+        }.get(self.upstream, "teacher.generate_samples")
+
+    def author_precision_policy(self, request: RunRequest) -> dict[str, str]:
+        """Return the audited inference policy of this pinned upstream sampler."""
+
+        del request
+        policies = {
+            "flm": "flm:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
+            "duo": "duo:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
+            "mdlm": "mdlm:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
+            "candi": "candi:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
+            "langflow": "langflow:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
+            "rdlm": "rdlm:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
+            "sdtt": "sdtt:pinned_bf16_mixed_config_and_internal_autocast",
+            "di4c": "di4c:pinned_bf16_mixed_config_and_internal_autocast",
+        }
+        return {"precision": "bf16-mixed", "precision_policy": policies[self.upstream]}
+
+    def render_benchmark_command(
+        self,
+        request: RunRequest,
+        run_dir: Path,
+        *,
+        output: Path,
+        metadata_path: Path,
+        precision: str,
+        dry_run: bool,
+    ) -> list[str]:
+        """Inject timing into this adapter's real loaded-model sampler command."""
+
+        if request.sample_count != 1:
+            raise AdapterError("primary latency benchmark requires sample_count=1")
+        if precision != "author":
+            raise AdapterError("benchmark precision must use the pinned author policy")
+        output = output.resolve()
+        metadata_path = metadata_path.resolve()
+        if output.is_symlink() or metadata_path.is_symlink():
+            raise AdapterError("benchmark output paths must not be symlinks")
+        arguments = self.render_command(request, run_dir, dry_run=dry_run)
+        marker = "-m"
+        capture_command = marker in arguments and "dlb.adapters.capture" in arguments
+        if capture_command:
+            separator = arguments.index("--")
+            arguments[separator:separator] = [
+                f"--benchmark-output={output}",
+                f"--benchmark-metadata={metadata_path}",
+                f"--benchmark-precision={precision}",
+            ]
+            replacements = {
+                "loader.eval_batch_size": "1",
+                "sampling.num_sample_batches": "1",
+                "sampling.batch_per_gpu": "1",
+                "--expected-samples": "1",
+            }
+            for key, value in replacements.items():
+                prefix = key + "="
+                for index, argument in enumerate(arguments):
+                    if argument.startswith(prefix):
+                        arguments[index] = prefix + value
+            for key in ("--num_samples", "--batch_size"):
+                if key in arguments:
+                    arguments[arguments.index(key) + 1] = "1"
+        else:
+            arguments.extend(
+                [
+                    "--benchmark-output",
+                    str(output),
+                    "--benchmark-metadata",
+                    str(metadata_path),
+                    "--benchmark-precision",
+                    precision,
+                ]
+            )
+            for key in ("--sample-count", "--batch-size"):
+                if key in arguments:
+                    arguments[arguments.index(key) + 1] = "1"
+        self._validate_argv(arguments)
+        return arguments
+
     def render_command(
         self, request: RunRequest, run_dir: Path, *, dry_run: bool
     ) -> list[str]:

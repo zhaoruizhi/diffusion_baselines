@@ -422,6 +422,37 @@ def write_capture_atomic(
         raise
 
 
+def benchmark_model(
+    *,
+    model,
+    output: Path,
+    metadata_path: Path,
+    precision: str,
+    num_steps: int,
+    seq_len: int,
+    sampler: str,
+):
+    """Time the already-materialized student's real one-sample tensor callback."""
+
+    if min(num_steps, seq_len) <= 0 or sampler != "ancestral":
+        raise ValueError("distilled benchmark sampling arguments are invalid")
+    from dlb.timing import benchmark_and_publish
+
+    return benchmark_and_publish(
+        lambda: model.sample(
+            n_samples=1,
+            num_steps=num_steps,
+            seq_len=seq_len,
+            sampler=sampler,
+            verbose=False,
+        ),
+        model=model,
+        output=output,
+        metadata_path=metadata_path,
+        precision=precision,
+    )
+
+
 def configure_for_sampling(config, *, tokenizer_snapshot: Path, seq_len: int) -> None:
     config.tokenizer.name = str(tokenizer_snapshot)
     config.model.length = seq_len
