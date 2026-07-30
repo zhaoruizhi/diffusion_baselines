@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import math
 import os
+import re
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -96,8 +97,10 @@ def resolve_gpt2_assets(root: Path) -> GPT2Assets:
             record = downloaded[name]
         except (KeyError, TypeError) as error:
             raise ValueError(f"missing pinned {name} snapshot record") from error
-        if type(revision) is not str or len(revision) != 40:
-            raise ValueError(f"{name} pinned revision is invalid")
+        if type(revision) is not str or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+            raise ValueError(
+                f"{name} pinned revision must be 40 lowercase hexadecimal characters"
+            )
         if not isinstance(record, dict):
             raise ValueError(f"{name} download record is invalid")
         if record.get("repo_id") != name:

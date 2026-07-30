@@ -81,6 +81,10 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
     partial = sample_count != PRODUCTION_SAMPLE_COUNT
     if partial and not args.allow_partial:
         raise ValueError("partial input requires --allow-partial")
+    if not partial and args.special_id:
+        raise ValueError(
+            "production evaluation forbids --special-id; dataset padding policy is fixed"
+        )
     if not partial and "entropy" in metric_names and args.dataset is None:
         raise ValueError("production entropy evaluation requires --dataset")
     records = _load_records(args.samples)
@@ -107,16 +111,22 @@ def evaluate(args: argparse.Namespace) -> dict[str, object]:
             "offline": True,
         }
 
-    excluded = set(args.special_id)
-    exclusion_source = "explicit_cli"
+    excluded = set()
+    exclusion_source = "none_partial"
+    special_token_policy = "partial_no_token_exclusions"
     if args.dataset is not None:
         excluded.update(DATASET_PADDING_IDS[args.dataset])
-        exclusion_source = "dataset_contract_plus_explicit_cli"
+        exclusion_source = "dataset_contract"
+        special_token_policy = "exclude_documented_padding_only_preserve_bos_eos"
+    if partial and args.special_id:
+        excluded.update(args.special_id)
+        exclusion_source = "custom_partial_cli"
+        special_token_policy = "custom_partial_not_baseline_comparable"
     if "entropy" in metric_names:
         entropy = mean_unigram_entropy(records, excluded)
         result_metrics["unigram_entropy"] = {
             **asdict(entropy),
-            "special_token_policy": "exclude_documented_padding_only_preserve_bos_eos",
+            "special_token_policy": special_token_policy,
             "exclusion_source": exclusion_source,
         }
 

@@ -3,7 +3,7 @@ import math
 import pytest
 
 import evaluation.self_bleu as self_bleu_module
-from evaluation.self_bleu import SelfBleuConfig, compute_self_bleu
+from evaluation.self_bleu import SelfBleuConfig, _reference_lengths, compute_self_bleu
 
 
 def test_self_bleu_detects_mode_collapse() -> None:
@@ -82,3 +82,9 @@ def test_leave_one_out_clipping_uses_second_max_for_unique_top_owner() -> None:
     )
 
     assert result.score == pytest.approx((2 / 5 + math.exp(-1.5)) / 3)
+
+
+def test_equidistant_reference_length_tie_chooses_shorter() -> None:
+    """Catch BLEU brevity penalty selecting the longer equidistant reference."""
+
+    assert _reference_lengths([4, 2, 6])[0] == 2

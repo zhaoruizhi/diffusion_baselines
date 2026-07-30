@@ -14,6 +14,7 @@ from evaluation.generative_perplexity import (
     GPT2Assets,
     load_offline_gpt2_large,
     resolve_gpt2_assets,
+    TorchCausalLMScorer,
 )
 
 
@@ -216,6 +217,29 @@ def test_resolver_rejects_unknown_download_manifest_schema(tmp_path: Path) -> No
         resolve_gpt2_assets(tmp_path)
 
 
+def test_resolver_rejects_non_lowercase_hex_revision(tmp_path: Path) -> None:
+    """Catch a 40-character value that is not an immutable lowercase Git revision."""
+
+    write_asset_manifests(tmp_path)
+    invalid = "g" * 40
+    configuration_path = tmp_path / "artifacts" / "data.yaml"
+    configuration = yaml.safe_load(configuration_path.read_text(encoding="utf-8"))
+    configuration["models"]["gpt2-large"] = invalid
+    configuration_path.write_text(yaml.safe_dump(configuration), encoding="utf-8")
+    downloads_path = tmp_path / "data" / "manifests" / "downloads.json"
+    downloads = json.loads(downloads_path.read_text(encoding="utf-8"))
+    source = tmp_path / downloads["models"]["gpt2-large"]["snapshot_path"]
+    destination = source.with_name(invalid)
+    source.rename(destination)
+    downloads["models"]["gpt2-large"].update(
+        revision=invalid, snapshot_path=destination.relative_to(tmp_path).as_posix()
+    )
+    downloads_path.write_text(json.dumps(downloads), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="lowercase hexadecimal"):
+        resolve_gpt2_assets(tmp_path)
+
+
 def test_resolver_rejects_symlinked_snapshot_ancestor(tmp_path: Path) -> None:
     """Catch a lock path being redirected after the download manifest was written."""
 
@@ -295,3 +319,30 @@ def test_loader_forces_local_snapshots_and_offline_mode(
     assert tokenizer.pad_token == "<eos>"
     assert tokenizer.padding_side == "right"
     assert tokenizer.truncation_side == "right"
+
+
+def test_torch_scorer_shifts_masks_and_sums_causal_nll() -> None:
+    """Catch framework integration using unshifted labels, padding, or mean loss."""
+
+    torch = pytest.importorskip("torch")
+    logits = torch.tensor(
+        [
+            [[0.0, math.log(2), 0.0], [0.0, 0.0, math.log(3)], [0.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [100.0, -100.0, 0.0], [0.0, 0.0, 0.0]],
+        ]
+    )
+
+    class TinyModel:
+        def eval(self):
+            return self
+
+        def __call__(self, *, input_ids, attention_mask):
+            return SimpleNamespace(logits=logits)
+
+    scorer = TorchCausalLMScorer(TinyModel(), device="cpu").eval()
+    total_nll, count = scorer.score_batch(
+        [[0, 1, 2], [0, 2, 1]], [[1, 1, 1], [1, 1, 0]]
+    )
+
+    assert count == 3
+    assert total_nll == pytest.approx(math.log(10))

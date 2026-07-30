@@ -6,6 +6,7 @@ import sys
 
 import pytest
 
+from dlb.io import write_samples_atomic
 from evaluation.unigram_entropy import mean_unigram_entropy, unigram_entropy
 
 
@@ -107,3 +108,84 @@ def test_metric_cli_atomically_labels_partial_fixture_result(tmp_path: Path) -> 
     assert document["metrics"]["unigram_entropy"]["unit"] == "nats"
     assert document["metrics"]["self_bleu"]["reference_rule"] == "all_other_samples"
     assert not list(tmp_path.glob(".metrics.json.*.partial"))
+
+
+def test_production_cli_rejects_custom_special_token_exclusions(tmp_path: Path) -> None:
+    """Catch a production metric excluding BOS/EOS while claiming padding-only policy."""
+
+    samples = tmp_path / "samples.jsonl"
+    write_samples_atomic(
+        samples,
+        [
+            {
+                "sample_id": index,
+                "text": f"sample {index}",
+                "token_ids": [101, index % 17 + 1, 102, 0],
+                "seed": 42,
+                "generation_seconds": 0.01,
+            }
+            for index in range(1024)
+        ],
+        expected=1024,
+    )
+    output = tmp_path / "metrics.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "evaluation.evaluate",
+            "--samples",
+            str(samples),
+            "--metrics",
+            "entropy",
+            "--dataset",
+            "lm1b",
+            "--special-id",
+            "101",
+            "--output",
+            str(output),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "production evaluation forbids --special-id" in result.stderr
+    assert not output.exists()
+
+
+def test_partial_custom_exclusion_is_labelled_nonbaseline(tmp_path: Path) -> None:
+    """Catch a custom partial entropy result carrying a padding-only claim."""
+
+    output = tmp_path / "metrics.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "evaluation.evaluate",
+            "--samples",
+            str(ROOT / "tests" / "fixtures" / "sample_texts.jsonl"),
+            "--metrics",
+            "entropy",
+            "--special-id",
+            "101",
+            "--output",
+            str(output),
+            "--allow-partial",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    entropy = json.loads(output.read_text(encoding="utf-8"))["metrics"][
+        "unigram_entropy"
+    ]
+    assert entropy["excluded_token_ids"] == [101]
+    assert entropy["exclusion_source"] == "custom_partial_cli"
+    assert entropy["special_token_policy"] == "custom_partial_not_baseline_comparable"
