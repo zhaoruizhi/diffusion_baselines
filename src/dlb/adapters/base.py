@@ -72,9 +72,8 @@ class BaseTeacherAdapter:
     def author_precision_policy(self, request: RunRequest) -> dict[str, str]:
         """Return the audited inference policy of this pinned upstream sampler."""
 
-        del request
         policies = {
-            "flm": "flm:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
+            "flm": "flm:checkpoint_config_and_loaded_runtime_code_bound",
             "duo": "duo:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
             "mdlm": "mdlm:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
             "candi": "candi:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
@@ -83,7 +82,19 @@ class BaseTeacherAdapter:
             "sdtt": "sdtt:pinned_bf16_mixed_config_and_internal_autocast",
             "di4c": "di4c:pinned_bf16_mixed_config_and_internal_autocast",
         }
-        return {"precision": "bf16-mixed", "precision_policy": policies[self.upstream]}
+        precision = (
+            "resolved-from-checkpoint-config-at-execution"
+            if request.model_id in {"flm", "fmlm"}
+            else "bf16-mixed"
+        )
+        return {
+            "precision": precision,
+            "precision_policy": policies[self.upstream],
+            "precision_evidence": (
+                "static_policy_bound_to_checkpoint_and_runtime_code_"
+                "not_runtime_autocast_observation"
+            ),
+        }
 
     def render_benchmark_command(
         self,

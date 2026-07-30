@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
+import inspect
 import json
 import math
 import os
 from pathlib import Path
+import re
 import statistics
 import subprocess
 import tempfile
@@ -28,12 +31,18 @@ REQUIRED_METADATA = frozenset(
         "model",
         "steps",
         "gpu_name",
-        "cuda_runtime",
-        "driver_version",
+        "gpu_index",
+        "gpu_compute_capability",
+        "cuda_runtime_version",
+        "pytorch_compiled_cuda_toolkit",
+        "nvidia_driver_version",
         "precision",
         "requested_precision",
         "parameter_precision",
         "precision_policy",
+        "precision_evidence",
+        "precision_policy_binding",
+        "runtime_code_binding",
         "synchronization_policy",
         "environment",
         "source_commit",
@@ -43,6 +52,7 @@ REQUIRED_METADATA = frozenset(
         "checkpoint_selection",
         "checkpoint_teacher_family",
         "adapter_identity",
+        "attempt_id",
     }
 )
 
@@ -130,15 +140,40 @@ def _validate_metadata(metadata: Mapping[str, object]) -> dict[str, object]:
     value = dict(metadata)
     if type(value["seed"]) is not int or type(value["steps"]) is not int or value["steps"] <= 0:
         raise ValueError("timing metadata seed/steps are invalid")
-    for key in REQUIRED_METADATA - {"seed", "steps", "checkpoint_selection"}:
+    structured = {
+        "seed",
+        "steps",
+        "gpu_index",
+        "checkpoint_selection",
+        "precision_policy_binding",
+        "runtime_code_binding",
+    }
+    for key in REQUIRED_METADATA - structured:
         if not isinstance(value[key], str) or not value[key]:
             raise ValueError(f"timing metadata {key} must be a non-empty string")
+    if type(value["gpu_index"]) is not int or value["gpu_index"] < 0:
+        raise ValueError("timing metadata gpu_index must be a nonnegative integer")
     if not isinstance(value["checkpoint_selection"], dict) or not value["checkpoint_selection"]:
         raise ValueError("timing metadata checkpoint_selection must be a non-empty mapping")
+    binding = value["precision_policy_binding"]
+    if not isinstance(binding, dict) or not binding:
+        raise ValueError("timing metadata precision_policy_binding must be a non-empty mapping")
+    code = value["runtime_code_binding"]
+    if not isinstance(code, list) or not code:
+        raise ValueError("timing metadata runtime_code_binding must be a non-empty list")
+    for item in code:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise ValueError("timing metadata runtime_code_binding entry is invalid")
+        digest = item.get("sha256")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("timing metadata runtime code SHA-256 is invalid")
     for key, length in (("source_commit", 40), ("config_sha256", 64), ("checkpoint_sha256", 64)):
         digest = value[key]
         if len(digest) != length or any(character not in "0123456789abcdef" for character in digest):
             raise ValueError(f"timing metadata {key} is not canonical hexadecimal")
+    attempt_id = value["attempt_id"]
+    if len(attempt_id) != 32 or any(character not in "0123456789abcdef" for character in attempt_id):
+        raise ValueError("timing metadata attempt_id is not canonical hexadecimal")
     return value
 
 
@@ -184,29 +219,43 @@ def load_metadata(path: Path) -> dict[str, object]:
     return value
 
 
-def _driver_version(torch_module: object) -> str:
-    internal = getattr(getattr(torch_module, "_C", None), "_cuda_getDriverVersion", None)
-    if callable(internal):
-        observed = internal()
-        if observed:
-            return str(observed)
+def _driver_version() -> str:
+    """Return the NVIDIA package driver version, never a CUDA API integer."""
+
     try:
         completed = subprocess.run(
-            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            [
+                "nvidia-smi",
+                "--query-gpu=driver_version",
+                "--format=csv,noheader,nounits",
+            ],
             check=True,
             capture_output=True,
             text=True,
             timeout=10,
         )
-        value = completed.stdout.splitlines()[0].strip()
-        if value:
-            return value
-    except (OSError, subprocess.SubprocessError, IndexError):
-        pass
-    return "unavailable"
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError("cannot query the NVIDIA driver version with nvidia-smi") from error
+    values = {line.strip() for line in completed.stdout.splitlines() if line.strip()}
+    if len(values) != 1:
+        raise RuntimeError("nvidia-smi did not return one consistent NVIDIA driver version")
+    value = next(iter(values))
+    if re.fullmatch(r"[0-9]+\.[0-9]+(?:\.[0-9]+)*", value) is None:
+        raise RuntimeError("nvidia-smi did not return a semantic NVIDIA driver version")
+    return value
 
 
-def cuda_runtime_metadata() -> dict[str, str]:
+def _cuda_version(value: object) -> str:
+    if type(value) is not int or value < 1000:
+        raise RuntimeError("cannot query the loaded CUDA runtime version")
+    major = value // 1000
+    remainder = value % 1000
+    minor = remainder // 10
+    patch = remainder % 10
+    return f"{major}.{minor}" + (f".{patch}" if patch else "")
+
+
+def cuda_runtime_metadata() -> dict[str, object]:
     """Collect GPU evidence after initialization but outside every timed interval."""
 
     import torch
@@ -214,13 +263,99 @@ def cuda_runtime_metadata() -> dict[str, str]:
     if not torch.cuda.is_available():
         raise RuntimeError("generation timing requires a CUDA server")
     device = torch.cuda.current_device()
-    runtime = getattr(torch.version, "cuda", None)
+    compiled_toolkit = getattr(torch.version, "cuda", None)
+    if not isinstance(compiled_toolkit, str) or not compiled_toolkit:
+        raise RuntimeError("PyTorch does not report its compiled CUDA toolkit version")
+    try:
+        cudart = torch.cuda.cudart()
+        runtime_query = getattr(cudart, "cudaRuntimeGetVersion")
+        runtime_version = _cuda_version(runtime_query())
+        capability = torch.cuda.get_device_capability(device)
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as error:
+        raise RuntimeError("cannot query the loaded CUDA runtime and selected GPU") from error
+    if (
+        not isinstance(capability, (tuple, list))
+        or len(capability) != 2
+        or any(type(part) is not int or part < 0 for part in capability)
+    ):
+        raise RuntimeError("selected GPU compute capability is invalid")
     return {
         "gpu_name": str(torch.cuda.get_device_name(device)),
-        "cuda_runtime": str(runtime or "unavailable"),
-        "driver_version": _driver_version(torch),
+        "gpu_index": device,
+        "gpu_compute_capability": f"{capability[0]}.{capability[1]}",
+        "cuda_runtime_version": runtime_version,
+        "pytorch_compiled_cuda_toolkit": compiled_toolkit,
+        "nvidia_driver_version": _driver_version(),
         "synchronization_policy": "torch.cuda.synchronize_before_start_and_after_generate",
     }
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def runtime_code_binding(model: object, generate_one: Callable[[], object]) -> list[dict[str, str]]:
+    """Bind loaded model classes and the executed sampling callable to source bytes."""
+
+    candidates: list[tuple[str, object]] = [("sampling_callable", generate_one), ("model", model)]
+    seen_objects: set[int] = set()
+    cursor = 0
+    while cursor < len(candidates):
+        _, candidate = candidates[cursor]
+        cursor += 1
+        identity = id(candidate)
+        if identity in seen_objects:
+            continue
+        seen_objects.add(identity)
+        modules = getattr(candidate, "modules", None)
+        if callable(modules):
+            try:
+                candidates.extend(("loaded_module", module) for module in modules())
+            except (RuntimeError, TypeError):
+                pass
+        for attribute in ("model", "module", "backbone", "net"):
+            child = getattr(candidate, attribute, None)
+            if child is not None and child is not candidate:
+                candidates.append((f"loaded_{attribute}", child))
+        if inspect.ismethod(candidate):
+            candidates.append(("bound_method_owner", candidate.__self__))
+        closure = getattr(candidate, "__closure__", None)
+        if closure:
+            for cell in closure:
+                try:
+                    child = cell.cell_contents
+                except ValueError:
+                    continue
+                if callable(child):
+                    candidates.append(("sampling_closure", child))
+
+    records: dict[tuple[str, str, str], dict[str, str]] = {}
+    for kind, candidate in candidates:
+        target = candidate if inspect.isfunction(candidate) or inspect.ismethod(candidate) else type(candidate)
+        try:
+            source = inspect.getsourcefile(target)
+        except (OSError, TypeError):
+            source = None
+        if not source:
+            continue
+        path = Path(source).resolve()
+        if path.is_symlink() or not path.is_file():
+            continue
+        digest = _sha256_path(path)
+        symbol = getattr(target, "__qualname__", type(candidate).__qualname__)
+        records[(str(path), digest, symbol)] = {
+            "path": str(path),
+            "sha256": digest,
+            "kind": kind,
+            "symbol": symbol,
+        }
+    if not records:
+        raise ValueError("cannot bind benchmark execution to loaded Python source")
+    return sorted(records.values(), key=lambda item: (item["path"], item["symbol"]))
 
 
 def observed_model_precision(model: object) -> str:
@@ -265,8 +400,10 @@ def benchmark_and_publish(
     metadata = load_metadata(metadata_path)
     if (
         metadata.get("requested_precision") != "author"
-        or metadata.get("precision") != "bf16-mixed"
+        or not isinstance(metadata.get("precision"), str)
         or not isinstance(metadata.get("precision_policy"), str)
+        or not isinstance(metadata.get("precision_evidence"), str)
+        or not isinstance(metadata.get("precision_policy_binding"), dict)
     ):
         raise ValueError("benchmark metadata does not bind an authoritative precision policy")
     synchronize = synchronize or torch.cuda.synchronize
@@ -281,6 +418,7 @@ def benchmark_and_publish(
     metadata = {
         **metadata,
         "parameter_precision": parameter_precision,
+        "runtime_code_binding": runtime_code_binding(model, generate_one),
         **cuda_runtime_metadata(),
     }
     publish_timing(output, result, metadata)

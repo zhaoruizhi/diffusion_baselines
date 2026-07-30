@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Iterable
+import uuid
 
 from dlb.adapters.base import AdapterError, BaseTeacherAdapter
+from dlb.checkpoints import load_checkpoint_manifest
 from dlb.command import ADAPTERS
-from dlb.io import atomic_json_write
+from dlb.io import atomic_json_write, sha256_file
 from dlb.registry import load_registry
 from dlb.runner import RunRequest, _resolve_request
+from dlb.timing import _validate_metadata
 
 
 def _run_dir(root: Path, request: RunRequest) -> Path:
@@ -90,12 +96,18 @@ def render_benchmark_matrix(
             adapter = ADAPTERS[model_id]
             request = _request(model_id, dataset_id, steps, seed)
             output = _output_path(output_root.resolve(), request)
-            metadata_path = output.with_name("benchmark_metadata.json")
+            dry_attempt = "0" * 32
+            staged_output = output.with_name(
+                f".{output.name}.{dry_attempt}.staged.json"
+            )
+            metadata_path = output.with_name(
+                f".benchmark_metadata.{dry_attempt}.json"
+            )
             try:
                 command = adapter.render_benchmark_command(
                     request,
                     _run_dir(root, request),
-                    output=output,
+                    output=staged_output,
                     metadata_path=metadata_path,
                     precision=precision,
                     dry_run=dry_run,
@@ -123,6 +135,7 @@ def render_benchmark_matrix(
                     "warmups": 5,
                     "repeats": 32,
                     "output": str(output),
+                    "staged_output": str(staged_output),
                     "metadata_path": str(metadata_path),
                     "command": command,
                 }
@@ -130,7 +143,72 @@ def render_benchmark_matrix(
     return records
 
 
-def _metadata(request: RunRequest, adapter: BaseTeacherAdapter) -> dict[str, object]:
+def _precision_policy_binding(
+    root: Path, request: RunRequest, adapter: BaseTeacherAdapter
+) -> dict[str, object]:
+    """Bind an audited static policy to exact run, checkpoint and config bytes."""
+
+    binding: dict[str, object] = {
+        "model": request.model_id,
+        "dataset": request.dataset_id,
+        "upstream": adapter.upstream,
+        "source_commit": request.source_sha256,
+        "experiment_config_sha256": request.config_sha256,
+        "checkpoint_sha256": request.checkpoint_sha256,
+        "checkpoint_lock_id": request.checkpoint_lock_id,
+        "checkpoint_selection": request.checkpoint_selection,
+        "adapter_identity": request.adapter_identity,
+    }
+    selection = request.checkpoint_selection
+    resource_id = selection.get("resource") if isinstance(selection, dict) else None
+    if isinstance(resource_id, str):
+        manifest = load_checkpoint_manifest(root / "artifacts/checkpoints.yaml")
+        resource = manifest.resources.get(resource_id)
+        if resource is None:
+            raise ValueError(f"precision policy references unknown checkpoint {resource_id}")
+        binding.update(
+            {
+                "checkpoint_resource": resource_id,
+                "checkpoint_repository": getattr(resource.source, "repo_id", None),
+                "checkpoint_revision": getattr(resource.source, "revision", None),
+            }
+        )
+        if request.model_id in {"flm", "fmlm"}:
+            config_path = root / "checkpoints" / resource.destination / "config.json"
+            if config_path.is_symlink() or not config_path.is_file():
+                raise ValueError(
+                    "FLM/FMLM precision policy requires the downloaded checkpoint config.json"
+                )
+            try:
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValueError("FLM/FMLM checkpoint config.json is invalid") from error
+            if not isinstance(config, dict):
+                raise ValueError("FLM/FMLM checkpoint config.json must be a mapping")
+            dtype = config.get("torch_dtype")
+            if not isinstance(dtype, str) or not dtype:
+                raise ValueError(
+                    "FLM/FMLM checkpoint config does not declare torch_dtype"
+                )
+            binding.update(
+                {
+                    "checkpoint_config_path": str(config_path.resolve()),
+                    "checkpoint_config_sha256": sha256_file(config_path),
+                    "checkpoint_config_torch_dtype": dtype,
+                    "checkpoint_config_architectures": config.get("architectures"),
+                    "checkpoint_config_auto_map": config.get("auto_map"),
+                }
+            )
+    return binding
+
+
+def _metadata(
+    root: Path, request: RunRequest, adapter: BaseTeacherAdapter, attempt_id: str
+) -> dict[str, object]:
+    binding = _precision_policy_binding(root, request, adapter)
+    policy: dict[str, object] = adapter.author_precision_policy(request)
+    if policy.get("precision") == "resolved-from-checkpoint-config-at-execution":
+        policy["precision"] = "bf16-mixed-static-author-policy"
     return {
         "seed": request.seed,
         "dataset": request.dataset_id,
@@ -145,8 +223,102 @@ def _metadata(request: RunRequest, adapter: BaseTeacherAdapter) -> dict[str, obj
         "checkpoint_teacher_family": request.checkpoint_teacher_family,
         "adapter_identity": request.adapter_identity,
         "requested_precision": "author",
-        **adapter.author_precision_policy(request),
+        "attempt_id": attempt_id,
+        "precision_policy_binding": binding,
+        **policy,
     }
+
+
+def _load_staged_timing(
+    path: Path, expected_metadata: dict[str, object], attempt_id: str
+) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise RuntimeError("benchmark sampler completed without a fresh staged timing result")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        timing = payload["timing"]
+        metadata = payload["metadata"]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise RuntimeError("fresh staged timing result is invalid") from error
+    if payload.get("schema") != "dlb-generation-timing-v1":
+        raise RuntimeError("fresh staged timing result has the wrong schema")
+    try:
+        _validate_metadata(metadata)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"fresh staged timing metadata is invalid: {error}") from error
+    if metadata.get("attempt_id") != attempt_id:
+        raise RuntimeError("fresh staged timing attempt provenance does not match")
+    for key, expected in expected_metadata.items():
+        if metadata.get(key) != expected:
+            raise RuntimeError(f"fresh staged timing provenance differs at {key}")
+    if not isinstance(timing, dict) or any(
+        timing.get(key) != expected
+        for key, expected in {
+            "mode": "primary_latency",
+            "warmups": 5,
+            "repeats": 32,
+            "batch_size": 1,
+            "num_timed_samples": 32,
+        }.items()
+    ):
+        raise RuntimeError("fresh staged timing protocol is invalid")
+    raw = timing.get("raw_durations_seconds")
+    seconds = timing.get("seconds_per_sample")
+    if (
+        not isinstance(raw, list)
+        or len(raw) != 32
+        or any(type(value) not in {int, float} or not math.isfinite(value) or value < 0 for value in raw)
+        or type(seconds) not in {int, float}
+        or not math.isfinite(seconds)
+        or seconds < 0
+    ):
+        raise RuntimeError("fresh staged timing durations are invalid")
+
+
+def run_timing_attempt(
+    command: list[str],
+    *,
+    cwd: Path,
+    final_output: Path,
+    staged_output: Path,
+    expected_metadata: dict[str, object],
+    attempt_id: str,
+) -> Path:
+    """Publish a staged result only after the complete sampler process succeeds."""
+
+    if re.fullmatch(r"[0-9a-f]{32}", attempt_id) is None:
+        raise ValueError("attempt_id must be 32 lowercase hexadecimal characters")
+    final_output = final_output.absolute()
+    staged_output = staged_output.absolute()
+    expected_stage = final_output.with_name(
+        f".{final_output.name}.{attempt_id}.staged.json"
+    )
+    if staged_output != expected_stage:
+        raise ValueError("staged timing path does not match this attempt")
+    final_output.parent.mkdir(parents=True, exist_ok=True)
+    if staged_output.exists() or staged_output.is_symlink():
+        raise RuntimeError("staged timing attempt path already exists")
+    superseded = final_output.with_name(
+        f".{final_output.name}.{attempt_id}.superseded.json"
+    )
+    if superseded.exists() or superseded.is_symlink():
+        raise RuntimeError("superseded timing path already exists")
+    if final_output.exists() or final_output.is_symlink():
+        if final_output.is_symlink() or not final_output.is_file():
+            raise RuntimeError("existing timing result is unsafe")
+        os.replace(final_output, superseded)
+    try:
+        completed = subprocess.run(command, cwd=cwd, check=False)
+        if completed.returncode:
+            raise RuntimeError(
+                f"benchmark sampler exited with status {completed.returncode}"
+            )
+        _load_staged_timing(staged_output, expected_metadata, attempt_id)
+        os.replace(staged_output, final_output)
+    except BaseException:
+        staged_output.unlink(missing_ok=True)
+        raise
+    return final_output
 
 
 def execute_one(
@@ -159,22 +331,30 @@ def execute_one(
     adapter: BaseTeacherAdapter = ADAPTERS[model]
     resolved, adapter = _resolve_request(request, root, adapter)
     output = _output_path(root / "results/timing", resolved)
-    metadata_path = output.with_name("benchmark_metadata.json")
-    atomic_json_write(metadata_path, _metadata(resolved, adapter))
-    command = adapter.render_benchmark_command(
-        resolved,
-        _run_dir(root, resolved),
-        output=output,
-        metadata_path=metadata_path,
-        precision=precision,
-        dry_run=False,
-    )
-    completed = subprocess.run(command, cwd=root, check=False)
-    if completed.returncode:
-        raise RuntimeError(f"benchmark sampler exited with status {completed.returncode}")
-    if output.is_symlink() or not output.is_file():
-        raise RuntimeError("benchmark sampler completed without atomic timing output")
-    return output
+    attempt_id = uuid.uuid4().hex
+    staged_output = output.with_name(f".{output.name}.{attempt_id}.staged.json")
+    metadata_path = output.with_name(f".benchmark_metadata.{attempt_id}.json")
+    metadata = _metadata(root, resolved, adapter, attempt_id)
+    atomic_json_write(metadata_path, metadata)
+    try:
+        command = adapter.render_benchmark_command(
+            resolved,
+            _run_dir(root, resolved),
+            output=staged_output,
+            metadata_path=metadata_path,
+            precision=precision,
+            dry_run=False,
+        )
+        return run_timing_attempt(
+            command,
+            cwd=root,
+            final_output=output,
+            staged_output=staged_output,
+            expected_metadata=metadata,
+            attempt_id=attempt_id,
+        )
+    finally:
+        metadata_path.unlink(missing_ok=True)
 
 
 def _csv(value: str) -> tuple[str, ...]:

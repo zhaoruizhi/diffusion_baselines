@@ -14,7 +14,10 @@ import dlb.adapters.capture as capture_module
 import dlb.timing as timing_module
 from dlb.adapters.capture import CaptureInvocation, TokenizerBinding
 from dlb.adapters.base import BaseTeacherAdapter
-from dlb.benchmarking import render_benchmark_matrix
+import dlb.benchmarking as benchmarking_module
+from dlb.benchmarking import render_benchmark_matrix, run_timing_attempt
+from dlb.command import ADAPTERS
+from dlb.runner import RunRequest
 from dlb.timing import benchmark, publish_timing
 
 
@@ -63,11 +66,39 @@ def _server_metadata(tmp_path: Path) -> Path:
                 "requested_precision": "author",
                 "precision": "bf16-mixed",
                 "precision_policy": "fixture:pinned_internal_bf16_autocast",
+                "precision_evidence": "static_policy_bound_to_checkpoint_and_runtime_code_not_runtime_autocast_observation",
+                "precision_policy_binding": {
+                    "model": "fixture",
+                    "dataset": "owt",
+                    "checkpoint_sha256": "b" * 64,
+                },
+                "attempt_id": "f" * 32,
             }
         ),
         encoding="utf-8",
     )
     return path
+
+
+def _complete_metadata(tmp_path: Path, attempt_id: str = "f" * 32) -> dict[str, object]:
+    value = json.loads(_server_metadata(tmp_path).read_text(encoding="utf-8"))
+    value.update(
+        {
+            "attempt_id": attempt_id,
+            "parameter_precision": "fp32",
+            "gpu_name": "fake-gpu",
+            "gpu_index": 0,
+            "gpu_compute_capability": "8.0",
+            "cuda_runtime_version": "12.4",
+            "pytorch_compiled_cuda_toolkit": "12.1",
+            "nvidia_driver_version": "535.104.05",
+            "runtime_code_binding": [
+                {"path": str(Path(__file__).resolve()), "sha256": "d" * 64}
+            ],
+            "synchronization_policy": "torch.cuda.synchronize_before_start_and_after_generate",
+        }
+    )
+    return value
 
 
 def _fake_cuda(monkeypatch) -> None:
@@ -78,8 +109,11 @@ def _fake_cuda(monkeypatch) -> None:
         "cuda_runtime_metadata",
         lambda: {
             "gpu_name": "fake-gpu",
-            "cuda_runtime": "12.1",
-            "driver_version": "535.1",
+            "gpu_index": 0,
+            "gpu_compute_capability": "8.0",
+            "cuda_runtime_version": "12.4",
+            "pytorch_compiled_cuda_toolkit": "12.1",
+            "nvidia_driver_version": "535.104.05",
             "synchronization_policy": "torch.cuda.synchronize_before_start_and_after_generate",
         },
     )
@@ -166,28 +200,15 @@ def test_publish_timing_is_atomic_and_contains_full_metadata(tmp_path: Path) -> 
         clock=FakeClock([0.0, 0.1, 1.0, 1.3]),
     )
     output = tmp_path / "timing.json"
-    metadata = {
-        "seed": 42,
-        "dataset": "owt",
-        "model": "flm",
-        "steps": 32,
-        "gpu_name": "fake-gpu",
-        "cuda_runtime": "12.1",
-        "driver_version": "535.1",
-        "precision": "bf16-mixed",
-        "requested_precision": "author",
-        "parameter_precision": "fp32",
-        "precision_policy": "flm:pinned_internal_bf16_autocast_with_fp32_sensitive_ops",
-        "synchronization_policy": "torch.cuda.synchronize_before_start_and_after_generate",
-        "environment": "dlb-flm",
-        "source_commit": "a" * 40,
-        "config_sha256": "c" * 64,
-        "checkpoint_sha256": "b" * 64,
-        "checkpoint_lock_id": "locked",
-        "checkpoint_selection": {"resource": "fixture"},
-        "checkpoint_teacher_family": "continuous_flm",
-        "adapter_identity": "fixture:v1",
-    }
+    metadata = _complete_metadata(tmp_path)
+    metadata.update(
+        {
+            "model": "flm",
+            "environment": "dlb-flm",
+            "checkpoint_teacher_family": "continuous_flm",
+            "precision_policy": "flm:pinned_static_policy_bound_at_execution",
+        }
+    )
 
     publish_timing(output, result, metadata)
 
@@ -223,6 +244,298 @@ def test_publish_timing_never_replaces_complete_result_on_invalid_metadata(tmp_p
     assert not list(tmp_path.glob("*.partial"))
 
 
+def _write_staged_timing(path: Path, metadata: dict[str, object]) -> None:
+    result = benchmark(
+        lambda: None,
+        lambda: None,
+        warmups=0,
+        repeats=32,
+        clock=FakeClock([value / 10 for value in range(64)]),
+    )
+    # Controller acceptance requires the production 5-warmup declaration even
+    # though this CPU fixture avoids doing redundant warmup work.
+    result = timing_module.TimingResult(**{**result.__dict__, "warmups": 5})
+    publish_timing(path, result, metadata)
+
+
+def test_attempt_promotes_staged_timing_only_after_subprocess_success(monkeypatch, tmp_path: Path) -> None:
+    attempt = "1" * 32
+    final = tmp_path / "timing.json"
+    staged = tmp_path / f".timing.json.{attempt}.staged.json"
+    expected = _complete_metadata(tmp_path, attempt)
+
+    def successful(command, cwd, check):
+        _write_staged_timing(staged, expected)
+        assert not final.exists()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(benchmarking_module.subprocess, "run", successful)
+    observed = run_timing_attempt(
+        ["fake-sampler"],
+        cwd=tmp_path,
+        final_output=final,
+        staged_output=staged,
+        expected_metadata=expected,
+        attempt_id=attempt,
+    )
+
+    assert observed == final
+    assert json.loads(final.read_text())["metadata"]["attempt_id"] == attempt
+    assert not staged.exists()
+
+
+def test_attempt_failure_retires_old_result_and_cleans_staged_output(monkeypatch, tmp_path: Path) -> None:
+    attempt = "2" * 32
+    final = tmp_path / "timing.json"
+    final.write_text('{"schema":"old-complete"}', encoding="utf-8")
+    staged = tmp_path / f".timing.json.{attempt}.staged.json"
+    expected = _complete_metadata(tmp_path, attempt)
+
+    def failing(command, cwd, check):
+        _write_staged_timing(staged, expected)
+        return SimpleNamespace(returncode=9)
+
+    monkeypatch.setattr(benchmarking_module.subprocess, "run", failing)
+    with pytest.raises(RuntimeError, match="status 9"):
+        run_timing_attempt(
+            ["fake-sampler"],
+            cwd=tmp_path,
+            final_output=final,
+            staged_output=staged,
+            expected_metadata=expected,
+            attempt_id=attempt,
+        )
+
+    assert not final.exists()
+    assert not staged.exists()
+    superseded = list(tmp_path.glob(".timing.json.*.superseded.json"))
+    assert len(superseded) == 1
+    assert superseded[0].read_text(encoding="utf-8") == '{"schema":"old-complete"}'
+
+
+def test_attempt_cannot_reuse_an_old_final_when_no_fresh_stage_is_written(monkeypatch, tmp_path: Path) -> None:
+    attempt = "3" * 32
+    final = tmp_path / "timing.json"
+    final.write_text('{"schema":"old-complete"}', encoding="utf-8")
+    staged = tmp_path / f".timing.json.{attempt}.staged.json"
+    monkeypatch.setattr(
+        benchmarking_module.subprocess,
+        "run",
+        lambda command, cwd, check: SimpleNamespace(returncode=0),
+    )
+
+    with pytest.raises(RuntimeError, match="fresh staged timing"):
+        run_timing_attempt(
+            ["fake-sampler"],
+            cwd=tmp_path,
+            final_output=final,
+            staged_output=staged,
+            expected_metadata=_complete_metadata(tmp_path, attempt),
+            attempt_id=attempt,
+        )
+
+    assert not final.exists()
+    assert not staged.exists()
+
+
+def test_attempt_rejects_mismatched_attempt_provenance_and_cleans_partial(
+    monkeypatch, tmp_path: Path
+) -> None:
+    attempt = "4" * 32
+    final = tmp_path / "timing.json"
+    staged = tmp_path / f".timing.json.{attempt}.staged.json"
+    expected = _complete_metadata(tmp_path, attempt)
+
+    def mismatched(command, cwd, check):
+        _write_staged_timing(staged, {**expected, "attempt_id": "5" * 32})
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(benchmarking_module.subprocess, "run", mismatched)
+    with pytest.raises(RuntimeError, match="attempt provenance"):
+        run_timing_attempt(
+            ["fake-sampler"],
+            cwd=tmp_path,
+            final_output=final,
+            staged_output=staged,
+            expected_metadata=expected,
+            attempt_id=attempt,
+        )
+
+    assert not final.exists()
+    assert not staged.exists()
+
+
+def test_driver_version_uses_nvidia_semantic_version_not_cuda_api_integer(monkeypatch) -> None:
+    monkeypatch.setattr(
+        timing_module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="535.104.05\n", returncode=0),
+    )
+    assert timing_module._driver_version() == "535.104.05"
+
+    monkeypatch.setattr(
+        timing_module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="12040\n", returncode=0),
+    )
+    with pytest.raises(RuntimeError, match="semantic NVIDIA driver"):
+        timing_module._driver_version()
+
+
+def test_driver_query_failure_fails_closed(monkeypatch) -> None:
+    def unavailable(*args, **kwargs):
+        raise FileNotFoundError("nvidia-smi")
+
+    monkeypatch.setattr(timing_module.subprocess, "run", unavailable)
+    with pytest.raises(RuntimeError, match="NVIDIA driver version"):
+        timing_module._driver_version()
+
+
+def test_cuda_metadata_distinguishes_loaded_runtime_from_compiled_toolkit(monkeypatch) -> None:
+    class Cudart:
+        @staticmethod
+        def cudaRuntimeGetVersion():
+            return 12040
+
+    fake_torch = SimpleNamespace(
+        version=SimpleNamespace(cuda="12.1"),
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            current_device=lambda: 2,
+            get_device_name=lambda device: f"fake-gpu-{device}",
+            get_device_capability=lambda device: (8, 0),
+            cudart=lambda: Cudart(),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(timing_module, "_driver_version", lambda: "535.104.05")
+
+    assert timing_module.cuda_runtime_metadata() == {
+        "gpu_name": "fake-gpu-2",
+        "gpu_index": 2,
+        "gpu_compute_capability": "8.0",
+        "cuda_runtime_version": "12.4",
+        "pytorch_compiled_cuda_toolkit": "12.1",
+        "nvidia_driver_version": "535.104.05",
+        "synchronization_policy": "torch.cuda.synchronize_before_start_and_after_generate",
+    }
+
+
+def test_cuda_metadata_fails_closed_without_loaded_runtime_evidence(monkeypatch) -> None:
+    fake_torch = SimpleNamespace(
+        version=SimpleNamespace(cuda="12.1"),
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            current_device=lambda: 0,
+            get_device_name=lambda device: "fake-gpu",
+            get_device_capability=lambda device: (8, 0),
+            cudart=lambda: SimpleNamespace(),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(timing_module, "_driver_version", lambda: "535.104.05")
+
+    with pytest.raises(RuntimeError, match="loaded CUDA runtime"):
+        timing_module.cuda_runtime_metadata()
+
+
+def test_flm_precision_policy_binds_checkpoint_revision_and_config_bytes(
+    monkeypatch, tmp_path: Path
+) -> None:
+    destination = "official/flm/owt"
+    config_path = tmp_path / "checkpoints" / destination / "config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "torch_dtype": "float32",
+                "architectures": ["DiTForDiffusionLM"],
+                "auto_map": {"AutoModelForMaskedLM": "modeling_dit.DiTForDiffusionLM"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    resource = SimpleNamespace(
+        destination=destination,
+        source=SimpleNamespace(
+            repo_id="owner/flm",
+            revision="e" * 40,
+        ),
+    )
+    monkeypatch.setattr(
+        benchmarking_module,
+        "load_checkpoint_manifest",
+        lambda path: SimpleNamespace(resources={"flm_owt_hf": resource}),
+    )
+    request = RunRequest(
+        run_id="precision-fixture",
+        model_id="flm",
+        dataset_id="owt",
+        step_count=32,
+        seed=42,
+        sample_count=1,
+        config_sha256="c" * 64,
+        source_sha256="a" * 40,
+        checkpoint_sha256="b" * 64,
+        checkpoint_lock_id="locked",
+        checkpoint_selection={"resource": "flm_owt_hf"},
+        checkpoint_teacher_family="continuous_flm",
+        adapter_identity="fixture:v1",
+        environment="dlb-flm",
+    )
+
+    binding = benchmarking_module._precision_policy_binding(
+        tmp_path, request, ADAPTERS["flm"]
+    )
+
+    assert binding["checkpoint_revision"] == "e" * 40
+    assert binding["checkpoint_config_torch_dtype"] == "float32"
+    assert binding["checkpoint_config_sha256"] == timing_module._sha256_path(config_path)
+    assert binding["checkpoint_config_auto_map"] == {
+        "AutoModelForMaskedLM": "modeling_dit.DiTForDiffusionLM"
+    }
+    metadata = benchmarking_module._metadata(
+        tmp_path, request, ADAPTERS["flm"], "f" * 32
+    )
+    assert metadata["precision"] == "bf16-mixed-static-author-policy"
+    assert metadata["precision_evidence"].endswith(
+        "not_runtime_autocast_observation"
+    )
+
+
+def test_flm_precision_policy_fails_closed_without_checkpoint_config(
+    monkeypatch, tmp_path: Path
+) -> None:
+    resource = SimpleNamespace(
+        destination="official/flm/owt",
+        source=SimpleNamespace(repo_id="owner/flm", revision="e" * 40),
+    )
+    monkeypatch.setattr(
+        benchmarking_module,
+        "load_checkpoint_manifest",
+        lambda path: SimpleNamespace(resources={"flm_owt_hf": resource}),
+    )
+    request = RunRequest(
+        run_id="precision-fixture",
+        model_id="flm",
+        dataset_id="owt",
+        step_count=32,
+        seed=42,
+        sample_count=1,
+        config_sha256="c" * 64,
+        source_sha256="a" * 40,
+        checkpoint_sha256="b" * 64,
+        checkpoint_lock_id="locked",
+        checkpoint_selection={"resource": "flm_owt_hf"},
+        checkpoint_teacher_family="continuous_flm",
+        adapter_identity="fixture:v1",
+        environment="dlb-flm",
+    )
+
+    with pytest.raises(ValueError, match="downloaded checkpoint config"):
+        benchmarking_module._precision_policy_binding(tmp_path, request, ADAPTERS["flm"])
+
+
 def test_server_benchmark_records_parameter_dtype_without_mislabeling_compute_precision(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -253,6 +566,25 @@ def test_server_benchmark_records_parameter_dtype_without_mislabeling_compute_pr
     assert payload["metadata"]["precision_policy"] == (
         "fixture:pinned_internal_bf16_autocast"
     )
+    assert payload["metadata"]["precision_evidence"].endswith(
+        "not_runtime_autocast_observation"
+    )
+    assert payload["metadata"]["runtime_code_binding"]
+    assert payload["metadata"]["runtime_code_binding"][0]["sha256"]
+
+
+def test_runtime_code_binding_includes_the_loaded_checkpoint_model_class() -> None:
+    class RemoteCheckpointModel:
+        pass
+
+    class Trainer:
+        def __init__(self):
+            self.model = RemoteCheckpointModel()
+
+    records = timing_module.runtime_code_binding(Trainer(), lambda: None)
+
+    assert any("RemoteCheckpointModel" in record["symbol"] for record in records)
+    assert all(len(record["sha256"]) == 64 for record in records)
 
 
 def test_every_registry_cell_has_a_concrete_benchmark_command_or_structured_skip() -> None:
@@ -279,6 +611,8 @@ def test_every_registry_cell_has_a_concrete_benchmark_command_or_structured_skip
         assert isinstance(command, list) and command
         assert "--benchmark-output" in " ".join(command)
         assert "--benchmark-metadata" in " ".join(command)
+        assert ".timing.json." + ("0" * 32) + ".staged.json" in " ".join(command)
+        assert ".benchmark_metadata." + ("0" * 32) + ".json" in " ".join(command)
         assert record["hook"] in {
             "teacher.generate_samples",
             "mdlm._sample",
@@ -289,7 +623,10 @@ def test_every_registry_cell_has_a_concrete_benchmark_command_or_structured_skip
         assert record["batch_size"] == 1
         assert record["warmups"] == 5
         assert record["repeats"] == 32
-        assert record["precision"] == "bf16-mixed"
+        if record["model"] in {"flm", "fmlm"}:
+            assert record["precision"] == "resolved-from-checkpoint-config-at-execution"
+        else:
+            assert record["precision"] == "bf16-mixed"
         policy_owner = {
             "fmlm": "flm",
             "duo_dcd": "duo",
