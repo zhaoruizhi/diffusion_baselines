@@ -6,6 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+import dlb.runner as runner_module
 from dlb.runner import RunRequest, run_experiment
 
 
@@ -404,3 +407,54 @@ def test_run_one_rejects_registry_invalid_step_before_fake_conda() -> None:
 
     assert completed.returncode == 2
     assert "invalid step count 3" in completed.stderr
+
+
+@pytest.mark.parametrize("signum", [signal.SIGKILL, signal.SIGSTOP])
+def test_cli_does_not_reset_uncatchable_signal_handlers(monkeypatch, tmp_path: Path, signum: int) -> None:
+    """Catch attempts to reset SIGKILL/SIGSTOP before re-emitting a child signal."""
+
+    reset_calls: list[int] = []
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr(runner_module, "run_experiment", lambda request, root: runner_module.RunResult("failed", tmp_path, -signum))
+    monkeypatch.setattr(runner_module.os, "name", "posix")
+    monkeypatch.setattr(signal, "signal", lambda observed, handler: reset_calls.append(observed))
+    monkeypatch.setattr(runner_module.os, "kill", lambda process, observed: kill_calls.append((process, observed)))
+
+    assert runner_module.main(["--root", str(tmp_path), "--model", "flm", "--dataset", "lm1b", "--steps", "2", "--seed", "42"]) == 128 + signum
+    assert reset_calls == []
+    assert kill_calls == [(os.getpid(), signum)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signal semantics")
+def test_cli_reemits_child_sigkill_without_handler_reset(tmp_path: Path) -> None:
+    """Catch SIGKILL propagation failing before the parent can self-send SIGKILL."""
+
+    prepare_canonical_root(tmp_path)
+    source_root = Path(__file__).parents[1] / "src"
+    child = """
+import os
+import signal
+import sys
+from dlb import runner
+
+class Adapter:
+    identity = 'sigkill-adapter'
+    def build_command(self, request, run_dir):
+        return [sys.executable, '-c', 'import os, signal; os.kill(os.getpid(), signal.SIGKILL)']
+    def convert_outputs(self, request, run_dir):
+        return []
+
+runner.load_adapter = lambda adapter_id: Adapter()
+raise SystemExit(runner.main([
+    '--root', sys.argv[1], '--model', 'flm', '--dataset', 'lm1b', '--steps', '2',
+    '--num-samples', '2', '--seed', '42',
+]))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", child, str(tmp_path)],
+        env={**os.environ, "PYTHONPATH": str(source_root)},
+    )
+
+    assert completed.returncode == -signal.SIGKILL
+    run_dir = tmp_path / "results" / "samples" / "lm1b" / "flm" / "steps_2"
+    assert json.loads((run_dir / "failure.json").read_text())["signal"] == signal.SIGKILL

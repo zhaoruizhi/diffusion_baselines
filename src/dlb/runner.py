@@ -493,7 +493,8 @@ def main(argv: list[str] | None = None) -> int:
 
             sys.stdout.flush()
             sys.stderr.flush()
-            signal.signal(signum, signal.SIG_DFL)
+            if signum not in {signal.SIGKILL, signal.SIGSTOP}:
+                signal.signal(signum, signal.SIG_DFL)
             os.kill(os.getpid(), signum)
         return 128 + signum
     return result.returncode
