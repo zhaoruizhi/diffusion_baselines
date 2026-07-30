@@ -11,6 +11,7 @@ from _distilled_runtime import (
     install_upstream,
     load_config,
     load_tokenizer,
+    load_tokenizer_binding,
     materialize_model,
     offline_huggingface,
     parse_bool,
@@ -18,6 +19,8 @@ from _distilled_runtime import (
     require_file,
     seed_everything,
     checkpoint_state,
+    validate_embedded_config,
+    validate_sampling_config,
     write_capture_atomic,
 )
 
@@ -27,6 +30,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--upstream-root", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--checkpoint-sha256", required=True)
+    parser.add_argument("--config-sha256", required=True)
+    parser.add_argument("--data-config", type=Path, required=True)
+    parser.add_argument("--downloads-manifest", type=Path, required=True)
+    parser.add_argument("--dataset", choices=("lm1b", "owt"), required=True)
     parser.add_argument("--tokenizer-snapshot", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--sample-count", type=int, required=True)
@@ -46,21 +54,31 @@ def main(argv: list[str] | None = None) -> int:
     install_upstream(upstream)
     checkpoint = require_file(args.checkpoint, "SDTT student checkpoint")
     config_path = require_file(args.config, "SDTT student config")
-    tokenizer_snapshot = require_directory(args.tokenizer_snapshot, "locked tokenizer")
+    binding = load_tokenizer_binding(
+        args.data_config,
+        args.downloads_manifest,
+        args.dataset,
+        args.tokenizer_snapshot,
+    )
     with offline_huggingface(args.offline):
-        from omegaconf import OmegaConf
         from sdtt.core.distill.multi_round_sdtt import MultiRoundSDTT
 
-        state, embedded_config = checkpoint_state(checkpoint)
-        config = (
-            load_config(config_path)
-            if embedded_config is None
-            else OmegaConf.create(embedded_config)
+        config = load_config(config_path, args.config_sha256)
+        state, embedded_config = checkpoint_state(
+            checkpoint, args.checkpoint_sha256
         )
+        validate_sampling_config(
+            config,
+            binding=binding,
+            sequence_length=args.seq_len,
+            require_di4c=False,
+        )
+        if embedded_config is not None:
+            validate_embedded_config(config, embedded_config)
         configure_for_sampling(
-            config, tokenizer_snapshot=tokenizer_snapshot, seq_len=args.seq_len
+            config, tokenizer_snapshot=binding.snapshot, seq_len=args.seq_len
         )
-        tokenizer = load_tokenizer(tokenizer_snapshot)
+        tokenizer = load_tokenizer(binding.snapshot)
         seed_everything(args.seed)
         model = materialize_model(
             model_type=MultiRoundSDTT,

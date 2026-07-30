@@ -10,7 +10,7 @@ from dlb.schema import SampleRecord
 
 
 class SDTTAdapter(BaseTeacherAdapter):
-    identity = "dlb.adapters.sdtt:v1"
+    identity = "dlb.adapters.sdtt:v2"
     upstream = "sdtt"
     supported_models = frozenset({"mdlm_sdtt"})
     teacher_families = {"mdlm_sdtt": "masked_mdlm"}
@@ -30,22 +30,21 @@ class SDTTAdapter(BaseTeacherAdapter):
             raise AdapterError(f"pinned SDTT source is missing or unsafe: {upstream_root}")
         if not wrapper.is_file() or wrapper.is_symlink():
             raise AdapterError(f"SDTT sampling wrapper is missing or unsafe: {wrapper}")
-        if checkpoint.path.suffix:
-            checkpoint_path = checkpoint.path
-            config_path = checkpoint.config_path
-            if config_path is None:
-                raise AdapterError("SDTT recipe does not bind a sampling config")
-            if not dry_run and (
-                config_path.is_symlink()
-                or not config_path.is_file()
-                or config_path.stat().st_size <= 0
-            ):
-                raise AdapterError(
-                    f"SDTT recipe sampling config is missing or unsafe: {config_path}"
-                )
-        else:
-            checkpoint_path = checkpoint.path / "model.safetensors"
-            config_path = checkpoint.path / "config.json"
+        checkpoint_path = (
+            checkpoint.path
+            if checkpoint.path.suffix
+            else checkpoint.path / "model.safetensors"
+        )
+        config_path = checkpoint.config_path
+        if config_path is None:
+            raise AdapterError("SDTT checkpoint selection does not bind a sampling config")
+        checkpoint_sha256, config_sha256 = self._runtime_asset_digests(
+            root,
+            request,
+            checkpoint_path,
+            config_path,
+            dry_run=dry_run,
+        )
         tokenizer_snapshot = self._tokenizer_snapshot(root, request.dataset_id)
         arguments = [
             sys.executable,
@@ -58,6 +57,16 @@ class SDTTAdapter(BaseTeacherAdapter):
             str(checkpoint_path),
             "--config",
             str(config_path),
+            "--checkpoint-sha256",
+            checkpoint_sha256,
+            "--config-sha256",
+            config_sha256,
+            "--data-config",
+            str(root / "artifacts/data.yaml"),
+            "--downloads-manifest",
+            str(root / "data/manifests/downloads.json"),
+            "--dataset",
+            request.dataset_id,
             "--tokenizer-snapshot",
             str(tokenizer_snapshot),
             "--output",

@@ -10,7 +10,7 @@ from dlb.schema import SampleRecord
 
 
 class Di4CAdapter(BaseTeacherAdapter):
-    identity = "dlb.adapters.di4c:v1"
+    identity = "dlb.adapters.di4c:v2"
     upstream = "di4c"
     teacher_families = {
         "mdlm_di4c": "masked_mdlm",
@@ -52,6 +52,16 @@ class Di4CAdapter(BaseTeacherAdapter):
             if not checkpoint.path.suffix
             else checkpoint.path
         )
+        config_path = checkpoint.config_path
+        if config_path is None:
+            raise AdapterError("Di4C checkpoint selection does not bind a sampling config")
+        checkpoint_sha256, config_sha256 = self._runtime_asset_digests(
+            root,
+            request,
+            checkpoint_path,
+            config_path,
+            dry_run=dry_run,
+        )
         tokenizer_snapshot = self._tokenizer_snapshot(root, request.dataset_id)
         arguments = [
             sys.executable,
@@ -62,6 +72,16 @@ class Di4CAdapter(BaseTeacherAdapter):
             str(upstream_root),
             "--checkpoint",
             str(checkpoint_path),
+            "--config",
+            str(config_path),
+            "--checkpoint-sha256",
+            checkpoint_sha256,
+            "--config-sha256",
+            config_sha256,
+            "--data-config",
+            str(root / "artifacts/data.yaml"),
+            "--downloads-manifest",
+            str(root / "data/manifests/downloads.json"),
             "--tokenizer-snapshot",
             str(tokenizer_snapshot),
             "--output",

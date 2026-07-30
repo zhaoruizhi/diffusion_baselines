@@ -1,0 +1,60 @@
+# Fully composed from pinned Di4C sdtt/configs defaults for inference only.
+mode: sample
+time_conditioning: false
+T: 1024
+compile: false
+is_di4c: true
+is_teacher_di4c: true
+latent_bsize: 16
+alpha_t: sigmoid
+alpha_const: 0.1
+distil_delta: 0.02
+log_unif: false
+round: 7
+data_preprocess:
+  data_cache: data/processed/owt-gpt2-1024
+  min_seq_len: -1
+  seq_len: 1024
+  group_text: true
+  remove_text: true
+  num_seqs: -1
+  add_bos: false
+  add_eos: true
+  legacy_start_end_bos: true
+training:
+  ema: 0.9999
+  antithetic_sampling: true
+  importance_sampling: false
+  sampling_eps: 1.0e-5
+  change_of_variables: false
+tokenizer:
+  name: gpt2
+model:
+  name: small
+  type: ddit-orig
+  hidden_size: 768
+  cond_dim: 128
+  length: 1024
+  n_blocks: 12
+  n_heads: 12
+  scale_by_sigma: true
+  dropout: 0.1
+  tie_word_embeddings: false
+noise:
+  type: loglinear
+  sigma_min: 1.0e-4
+  sigma_max: 20
+parameterization:
+  name: multi-round-sdtt
+  log_loss_buckets: -1
+  checkpoint_path: manifest-selected-at-runtime
+  start_from_hf: false
+  distill_mode: kl-bwd
+  num_distill_steps: 2
+  min_num_sampling_steps: 8
+  grow_dt_every: 10000
+  orig_num_sampling_steps: 1024
+  sampling_mode: ancestral
+  loss_precision: null
+  reset_optimizer_on_growth: false
+  use_ema_on_growth: false

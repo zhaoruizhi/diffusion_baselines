@@ -174,11 +174,43 @@ class CoverageEntry(ManifestModel):
     resource: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     path: str | None = None
     teacher_family: TeacherFamily | None = None
+    sampling_config: str | None = None
+    sampling_config_source: Literal["resource", "project"] | None = None
+    sampling_config_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    sampling_config_source_commit: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{40}$"
+    )
 
     @model_validator(mode="after")
     def validate_path(self) -> "CoverageEntry":
         if self.path is not None:
             safe_remote_path(self.path)
+        config_fields = (self.sampling_config, self.sampling_config_source)
+        if any(value is None for value in config_fields) != all(
+            value is None for value in config_fields
+        ):
+            raise ValueError("coverage sampling config requires a path and source")
+        if self.sampling_config is not None:
+            config = safe_remote_path(self.sampling_config)
+            if config.suffix.lower() not in {".json", ".yaml", ".yml"}:
+                raise ValueError("coverage sampling config has an unsupported suffix")
+        if self.sampling_config_source == "project":
+            if (
+                self.sampling_config_sha256 is None
+                or self.sampling_config_source_commit is None
+            ):
+                raise ValueError(
+                    "project sampling config requires a pinned SHA-256 and source commit"
+                )
+        elif (
+            self.sampling_config_sha256 is not None
+            or self.sampling_config_source_commit is not None
+        ):
+            raise ValueError(
+                "only project sampling configs declare SHA-256 and source commit"
+            )
         return self
 
 
@@ -224,6 +256,10 @@ class TrainingRecipe(ManifestModel):
             if self.teacher_adapter != expected:
                 raise ValueError(
                     f"{self.source} recipe for {self.teacher_family} requires {expected}"
+                )
+            if self.sampling_checkpoint is None or self.sampling_config is None:
+                raise ValueError(
+                    f"{self.source} recipe requires exact sampling checkpoint and config"
                 )
         elif self.teacher_adapter is not None:
             raise ValueError("teacher adapters are only valid for SDTT/Di4C recipes")

@@ -12,7 +12,7 @@ from typing import ClassVar, Iterable
 import yaml
 
 from dlb.checkpoints import load_checkpoint_manifest
-from dlb.io import atomic_json_write
+from dlb.io import atomic_json_write, sha256_file
 from dlb.registry import load_registry
 from dlb.runner import RunRequest, _resolve_checkpoint_provenance
 from dlb.schema import SampleRecord
@@ -303,6 +303,54 @@ class BaseTeacherAdapter:
                 "checkpoint teacher family differs from canonical checkpoint provenance"
             )
 
+    def _runtime_asset_digests(
+        self,
+        root: Path,
+        request: RunRequest,
+        checkpoint_path: Path,
+        config_path: Path,
+        *,
+        dry_run: bool,
+    ) -> tuple[str, str]:
+        """Authenticate selected bytes before a server wrapper may deserialize them."""
+
+        if dry_run:
+            return "dry-run-unverified", "dry-run-unverified"
+        self._require_conversion_provenance(root, request)
+        checkpoint_digest = sha256_file(checkpoint_path)
+        config_digest = sha256_file(config_path)
+        selection = request.checkpoint_selection or {}
+        resource_id = selection.get("resource")
+        if isinstance(resource_id, str):
+            lock_path = root / "artifacts" / "checkpoint_lock.json"
+            try:
+                lock = json.loads(lock_path.read_text(encoding="utf-8"))
+                record = lock["resources"][resource_id]
+                files = record["files"]
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as error:
+                raise AdapterError("canonical checkpoint lock is invalid") from error
+            if not isinstance(files, list):
+                raise AdapterError("canonical checkpoint lock file inventory is invalid")
+            expected = {
+                str(item.get("path")): item.get("sha256")
+                for item in files
+                if isinstance(item, dict)
+            }
+            for path, digest, label in (
+                (checkpoint_path, checkpoint_digest, "student checkpoint"),
+                (config_path, config_digest, "sampling config"),
+            ):
+                relative = path.relative_to(root).as_posix()
+                if selection.get("sampling_config_source") == "project" and path == config_path:
+                    locked_digest = selection.get("sampling_config_sha256")
+                else:
+                    locked_digest = expected.get(relative)
+                if locked_digest != digest:
+                    raise AdapterError(
+                        f"{label} SHA differs from canonical checkpoint provenance: {path}"
+                    )
+        return checkpoint_digest, config_digest
+
     def _validate_request(
         self, request: RunRequest, run_dir: Path
     ) -> tuple[Path, int, int]:
@@ -393,11 +441,28 @@ class BaseTeacherAdapter:
                 )
             base = root / "checkpoints" / resource.destination
             path = base / coverage.path if coverage.path else base
+            config_path: Path | None = None
+            config_sha256: str | None = None
+            if coverage.sampling_config is not None:
+                if coverage.sampling_config_source == "resource":
+                    config_path = (base / coverage.sampling_config).absolute()
+                else:
+                    config_path = (root / coverage.sampling_config).absolute()
+                    config_sha256 = coverage.sampling_config_sha256
+                    if (
+                        config_path.is_symlink()
+                        or not config_path.is_file()
+                        or sha256_file(config_path) != config_sha256
+                    ):
+                        raise AdapterError(
+                            f"project sampling config is missing or differs from manifest: {config_path}"
+                        )
             selection = CheckpointSelection(
                 path=path.resolve(),
                 teacher_family=family,
                 source=f"resource:{coverage.resource}",
                 required_files=tuple(resource.required_files),
+                config_path=config_path,
             )
             if not dry_run:
                 self._require_resource_checkpoint(selection, base, coverage.path)
@@ -435,13 +500,32 @@ class BaseTeacherAdapter:
                     )
         else:
             path = output if dry_run else self._select_recipe_checkpoint(output)
+        config_path = (
+            (output / recipe.sampling_config).absolute()
+            if recipe.sampling_config is not None
+            else None
+        )
+        if not dry_run and config_path is not None:
+            relative = Path(recipe.sampling_config)
+            ancestors = [output]
+            current = output
+            for part in relative.parts[:-1]:
+                current = current / part
+                ancestors.append(current)
+            if (
+                any(ancestor.is_symlink() for ancestor in ancestors)
+                or config_path.is_symlink()
+                or not config_path.is_file()
+                or config_path.stat().st_size <= 0
+            ):
+                raise AdapterError(
+                    f"recipe sampling config is missing or unsafe: {config_path}"
+                )
         return CheckpointSelection(
             path=path,
             teacher_family=recipe.teacher_family,
             source=f"recipe:{recipe_id}",
-            config_path=(output / recipe.sampling_config).absolute()
-            if recipe.sampling_config is not None
-            else None,
+            config_path=config_path,
         )
 
     def _require_resource_checkpoint(

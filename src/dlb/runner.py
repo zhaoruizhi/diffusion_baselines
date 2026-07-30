@@ -206,6 +206,20 @@ def _resolve_checkpoint_provenance(
                 "sha256": item["sha256"],
             }
         )
+    if coverage.sampling_config_source == "project":
+        config_path = root / str(coverage.sampling_config)
+        if config_path.is_symlink() or not config_path.is_file():
+            raise ValueError("project sampling config is missing or unsafe")
+        observed_config_sha256 = sha256_file(config_path)
+        if observed_config_sha256 != coverage.sampling_config_sha256:
+            raise ValueError("project sampling config differs from checkpoint manifest")
+        inventory.append(
+            {
+                "path": config_path.relative_to(root).as_posix(),
+                "size_bytes": config_path.stat().st_size,
+                "sha256": observed_config_sha256,
+            }
+        )
     if not inventory:
         raise ValueError(f"checkpoint lock lacks selected file for {coverage.resource}")
     selector = {
@@ -213,6 +227,15 @@ def _resolve_checkpoint_provenance(
         "path": coverage.path,
         "teacher_family": coverage.teacher_family,
     }
+    if coverage.sampling_config is not None:
+        selector.update(
+            {
+                "sampling_config": coverage.sampling_config,
+                "sampling_config_source": coverage.sampling_config_source,
+                "sampling_config_sha256": coverage.sampling_config_sha256,
+                "sampling_config_source_commit": coverage.sampling_config_source_commit,
+            }
+        )
     digest = _canonical_sha256(
         {
             "manifest_sha256": manifest_sha256,

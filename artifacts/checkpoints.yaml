@@ -247,6 +247,7 @@ recipes:
       --upstream-override is_di4c=true
     output: checkpoints/reference_reproduction/duo_di4c/lm1b
     sampling_checkpoint: student_checkpoints/20000.ckpt
+    sampling_config: config.yaml
     prerequisites: [flm_lm1b_reproductions]
     note: Task 12's repository wrapper must adapt the uniform Duo vocabulary/head to the absorbing Di4C shape; Zenodo SDTT files are forbidden substitutes.
   duo_di4c_owt:
@@ -265,6 +266,7 @@ recipes:
       --upstream-override is_di4c=true
     output: checkpoints/reference_reproduction/duo_di4c/owt
     sampling_checkpoint: student_checkpoints/50000.ckpt
+    sampling_config: config.yaml
     prerequisites: [duo_raw_owt_drive]
     note: Task 12's repository wrapper must adapt the uniform Duo vocabulary/head to the absorbing Di4C shape; never relabel the masked-teacher Zenodo checkpoint.
   mdlm_sdtt_lm1b:
@@ -301,6 +303,7 @@ recipes:
       --upstream-override is_di4c=true
     output: checkpoints/reference_reproduction/mdlm_di4c/lm1b
     sampling_checkpoint: student_checkpoints/20000.ckpt
+    sampling_config: config.yaml
     prerequisites: [flm_lm1b_reproductions]
     note: Task 12's repository wrapper must adapt the BERT masked teacher to the absorbing Di4C shape; Zenodo contains OWT students only.
 coverage:
@@ -316,5 +319,15 @@ coverage:
   - {model: mdlm, dataset: owt, resource: mdlm_owt_hf}
   - {model: candi, dataset: lm1b, resource: flm_lm1b_reproductions, path: lm1b_CANDI.ckpt, teacher_family: hybrid_candi}
   - {model: rdlm, dataset: lm1b, resource: rdlm_lm1b_drive}
-  - {model: mdlm_sdtt, dataset: owt, resource: sdtt_owt_hf}
-  - {model: mdlm_di4c, dataset: owt, resource: di4c_mdlm_owt_zenodo}
+  - model: mdlm_sdtt
+    dataset: owt
+    resource: sdtt_owt_hf
+    sampling_config: config.json
+    sampling_config_source: resource
+  - model: mdlm_di4c
+    dataset: owt
+    resource: di4c_mdlm_owt_zenodo
+    sampling_config: configs/sampling/di4c_mdlm_owt.yaml
+    sampling_config_source: project
+    sampling_config_sha256: cf627f89b8dede9b25ac8e10407c3b7de203a76c4ba84100723287e571dcec34
+    sampling_config_source_commit: ac61ff9fe8e85120f9e1d2a8c5a332f8b8353dd3

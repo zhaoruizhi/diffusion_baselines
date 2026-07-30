@@ -5,14 +5,17 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from dlb.adapters.base import AdapterError
 from dlb.adapters.di4c import Di4CAdapter
 from dlb.adapters.sdtt import SDTTAdapter
 from dlb.command import main as command_main
-from dlb.runner import RunRequest
+from dlb.runner import RunRequest, _resolve_checkpoint_provenance
 
 
 ROOT = Path(__file__).parents[1]
@@ -54,6 +57,49 @@ def option(command: list[str], key: str) -> str:
     return command[index + 1]
 
 
+def prepare_tokenizer_binding(
+    root: Path, dataset: str
+) -> tuple[Path, Path, Path]:
+    """Create the minimal immutable tokenizer lock consumed by wrapper tests."""
+
+    data_config = root / "artifacts" / "data.yaml"
+    data_config.parent.mkdir(parents=True, exist_ok=True)
+    data_config.write_text(
+        (ROOT / "artifacts/data.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    document = yaml.safe_load(data_config.read_text(encoding="utf-8"))
+    tokenizer_id = document["datasets"][dataset]["tokenizer"]
+    revision = document["models"][tokenizer_id]
+    snapshot = (
+        root
+        / "locked-tokenizers"
+        / f"models--{tokenizer_id}"
+        / "snapshots"
+        / revision
+    )
+    snapshot.mkdir(parents=True)
+    downloads = root / "data/manifests/downloads.json"
+    downloads.parent.mkdir(parents=True)
+    downloads.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "models": {
+                    tokenizer_id: {
+                        "repo_id": tokenizer_id,
+                        "revision": revision,
+                        "snapshot_path": snapshot.relative_to(root).as_posix(),
+                        "size_bytes": 1,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return data_config, downloads, snapshot
+
+
 @pytest.mark.parametrize(
     ("model", "dataset", "adapter_type"),
     [
@@ -81,6 +127,13 @@ def test_all_six_distilled_cells_render_real_project_wrappers(
     assert option(command, "--seed") == "42"
     assert option(command, "--sampler") == "ancestral"
     assert option(command, "--offline") == "true"
+    assert Path(option(command, "--data-config")) == ROOT / "artifacts/data.yaml"
+    assert Path(option(command, "--downloads-manifest")) == (
+        ROOT / "data/manifests/downloads.json"
+    )
+    assert option(command, "--dataset") == dataset
+    assert option(command, "--checkpoint-sha256") == "dry-run-unverified"
+    assert option(command, "--config-sha256") == "dry-run-unverified"
     assert Path(option(command, "--output")) == run_dir(item) / "upstream_token_ids.json"
 
 
@@ -122,6 +175,10 @@ def test_di4c_binds_teacher_family_and_dataset_intermediate_checkpoint(
 
     assert option(command, "--teacher-family") == family
     assert Path(option(command, "--checkpoint")).as_posix().endswith(suffix)
+    assert Path(option(command, "--config")).name in {
+        "config.yaml",
+        "di4c_mdlm_owt.yaml",
+    }
     if family == "uniform_duo":
         assert "sdtt7-di4c2.ckpt" not in " ".join(command)
         assert "official/mdlm_di4c" not in " ".join(command)
@@ -267,6 +324,162 @@ def test_sampling_runtime_rejects_a_symlink_output(tmp_path: Path) -> None:
     assert target.read_text(encoding="utf-8") == "do not overwrite"
 
 
+def test_lightning_dictconfig_checkpoint_uses_verified_full_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch PyTorch 2.5 weights-only rejecting Lightning's OmegaConf DictConfig."""
+
+    runtime = load_runtime_module()
+    checkpoint = tmp_path / "student.ckpt"
+    checkpoint.write_bytes(b"manifest-verified-lightning-checkpoint")
+    expected = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    embedded = {"model": {"type": "ddit-orig"}}
+    calls: list[dict[str, object]] = []
+
+    def load(path, **kwargs):
+        calls.append({"path": path, **kwargs})
+        if kwargs.get("weights_only") is not False:
+            raise RuntimeError("Weights only load failed for omegaconf.dictconfig.DictConfig")
+        return {
+            "state_dict": {"backbone.weight": object()},
+            "hyper_parameters": {"config": embedded},
+        }
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(load=load))
+
+    state, observed = runtime.checkpoint_state(checkpoint, expected)
+
+    assert calls == [
+        {"path": str(checkpoint), "map_location": "cpu", "weights_only": False}
+    ]
+    assert state == {"backbone.weight": state["backbone.weight"]}
+    assert observed is embedded
+
+
+def test_checkpoint_loader_rejects_unverified_pickle_before_torch_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = load_runtime_module()
+    checkpoint = tmp_path / "student.ckpt"
+    checkpoint.write_bytes(b"checkpoint")
+    called = False
+
+    def load(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("must not deserialize unverified bytes")
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(load=load))
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        runtime.checkpoint_state(checkpoint, "0" * 64)
+    assert not called
+
+
+def test_real_lightning_omegaconf_fixture_when_runtime_is_available(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    OmegaConf = pytest.importorskip("omegaconf").OmegaConf
+    runtime = load_runtime_module()
+    checkpoint = tmp_path / "student.ckpt"
+    config = OmegaConf.create({"model": {"type": "ddit-orig"}})
+    torch.save(
+        {
+            "state_dict": {"backbone.weight": torch.tensor([1.0])},
+            "hyper_parameters": {"config": config},
+        },
+        checkpoint,
+    )
+    digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+
+    state, embedded = runtime.checkpoint_state(checkpoint, digest)
+
+    assert state["backbone.weight"].tolist() == [1.0]
+    assert OmegaConf.to_container(embedded) == {"model": {"type": "ddit-orig"}}
+
+
+def test_embedded_config_must_match_manifest_selected_architecture() -> None:
+    runtime = load_runtime_module()
+    authoritative = {
+        "model": {"type": "ddit-orig", "hidden_size": 768, "n_blocks": 12},
+        "parameterization": {"name": "multi-round-sdtt", "sampling_mode": "ancestral"},
+        "training": {"sampling_eps": 1e-5},
+        "T": 1024,
+        "time_conditioning": False,
+    }
+    mismatched = json.loads(json.dumps(authoritative))
+    mismatched["model"]["n_blocks"] = 24
+
+    with pytest.raises(ValueError, match="model.n_blocks"):
+        runtime.validate_embedded_config(authoritative, mismatched)
+
+
+def test_tokenizer_binding_cross_checks_data_and_download_manifests(tmp_path: Path) -> None:
+    runtime = load_runtime_module()
+    data_config, downloads, snapshot = prepare_tokenizer_binding(tmp_path, "owt")
+
+    binding = runtime.load_tokenizer_binding(
+        data_config, downloads, "owt", snapshot
+    )
+    assert binding.tokenizer_id == "gpt2"
+    assert binding.snapshot == snapshot
+
+    document = json.loads(downloads.read_text(encoding="utf-8"))
+    document["models"]["gpt2"]["revision"] = "0" * 40
+    downloads.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="differs"):
+        runtime.load_tokenizer_binding(data_config, downloads, "owt", snapshot)
+
+
+def test_project_sampling_config_bytes_are_bound_to_checkpoint_provenance(
+    tmp_path: Path,
+) -> None:
+    for relative in (
+        Path("artifacts/checkpoints.yaml"),
+        Path("configs/experiments.yaml"),
+        Path("configs/sampling/di4c_mdlm_owt.yaml"),
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / relative).read_bytes())
+    manifest = tmp_path / "artifacts/checkpoints.yaml"
+    manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    checkpoint_path = "checkpoints/official/mdlm_di4c/owt/sdtt7-di4c2.ckpt"
+    (tmp_path / "artifacts/checkpoint_lock.json").write_text(
+        json.dumps(
+            {
+                "manifest_sha256": manifest_sha256,
+                "resources": {
+                    "di4c_mdlm_owt_zenodo": {
+                        "status": "downloaded",
+                        "files": [
+                            {
+                                "path": checkpoint_path,
+                                "size_bytes": 3,
+                                "sha256": "a" * 64,
+                            }
+                        ],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    item = request("mdlm_di4c", "owt", samples=1)
+
+    provenance = _resolve_checkpoint_provenance(tmp_path, item, None)
+    assert provenance.selection["sampling_config_sha256"] == (
+        "cf627f89b8dede9b25ac8e10407c3b7de203a76c4ba84100723287e571dcec34"
+    )
+    assert provenance.selection["sampling_config_source_commit"] == (
+        "ac61ff9fe8e85120f9e1d2a8c5a332f8b8353dd3"
+    )
+
+    config = tmp_path / "configs/sampling/di4c_mdlm_owt.yaml"
+    config.write_text(config.read_text(encoding="utf-8") + "\n# mutation\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="project sampling config differs"):
+        _resolve_checkpoint_provenance(tmp_path, item, None)
+
+
 @pytest.mark.parametrize(
     ("adapter", "model", "dataset"),
     [
@@ -314,7 +527,15 @@ def prepare_official_sdtt_conversion(tmp_path: Path, item: RunRequest) -> RunReq
         ),
         encoding="utf-8",
     )
-    selector = {"resource": "sdtt_owt_hf", "path": None, "teacher_family": None}
+    selector = {
+        "resource": "sdtt_owt_hf",
+        "path": None,
+        "teacher_family": None,
+        "sampling_config": "config.json",
+        "sampling_config_source": "resource",
+        "sampling_config_sha256": None,
+        "sampling_config_source_commit": None,
+    }
     digest = hashlib.sha256(
         json.dumps(
             {
