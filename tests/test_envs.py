@@ -516,12 +516,22 @@ def test_verify_all_checks_the_complete_method_import_mapping(fake_conda, tmp_pa
     )
 
     assert completed.returncode == 0, completed.stderr
-    probe_calls = [call for call in calls if call[:1] == ["run"]]
-    assert len(probe_calls) == len(expected_imports)
-    assert {
-        call[5]: set(call[6:])
-        for call in probe_calls
-    } == expected_imports
+    requested_imports = {}
+    for call in calls:
+        if call[:1] != ["run"]:
+            continue
+        assert call[:2] == ["run", "-n"]
+        assert call[3:5] == ["python", "-"]
+        manager_environment = call[2]
+        probe_environment = call[5]
+        assert manager_environment == probe_environment
+        assert manager_environment in expected_imports
+        assert manager_environment not in requested_imports
+        requested_imports[manager_environment] = set(call[6:])
+
+    assert set(requested_imports) == set(expected_imports)
+    for environment, expected_modules in expected_imports.items():
+        assert requested_imports[environment] == expected_modules
 
 
 def test_pack_all_writes_archives_without_removing_environment(fake_conda, tmp_path):
