@@ -1,8 +1,8 @@
 """Typed, serializable records produced by baseline runs."""
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictInt, field_validator
 
 
 class StrictModel(BaseModel):
@@ -12,11 +12,18 @@ class StrictModel(BaseModel):
 
 
 class SampleRecord(StrictModel):
-    sample_id: int = Field(ge=0)
+    sample_id: StrictInt = Field(ge=0)
     text: str = Field(min_length=1)
-    token_ids: list[int] = Field(min_length=1)
-    seed: int
-    generation_seconds: float = Field(ge=0)
+    token_ids: list[Annotated[StrictInt, Field(ge=0)]] = Field(min_length=1)
+    seed: StrictInt
+    generation_seconds: Annotated[FiniteFloat, Field(ge=0)]
+
+    @field_validator("text")
+    @classmethod
+    def require_non_whitespace_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text must not be empty or whitespace")
+        return value
 
 
 class RunMetadata(StrictModel):
