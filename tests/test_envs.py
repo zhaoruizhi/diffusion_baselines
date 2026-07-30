@@ -527,7 +527,9 @@ def test_verify_all_checks_the_complete_method_import_mapping(fake_conda, tmp_pa
         assert manager_environment == probe_environment
         assert manager_environment in expected_imports
         assert manager_environment not in requested_imports
-        requested_imports[manager_environment] = set(call[6:])
+        raw_modules = call[6:]
+        assert len(raw_modules) == len(set(raw_modules))
+        requested_imports[manager_environment] = set(raw_modules)
 
     assert set(requested_imports) == set(expected_imports)
     for environment, expected_modules in expected_imports.items():
