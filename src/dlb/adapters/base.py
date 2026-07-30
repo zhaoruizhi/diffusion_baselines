@@ -14,7 +14,7 @@ import yaml
 from dlb.checkpoints import load_checkpoint_manifest
 from dlb.io import atomic_json_write
 from dlb.registry import load_registry
-from dlb.runner import RunRequest
+from dlb.runner import RunRequest, _resolve_checkpoint_provenance
 from dlb.schema import SampleRecord
 
 
@@ -102,7 +102,10 @@ class BaseTeacherAdapter:
     def convert_outputs(
         self, request: RunRequest, run_dir: Path
     ) -> Iterable[SampleRecord]:
-        root, _, batch_size = self._validate_conversion_request(request, run_dir)
+        root, sequence_length, batch_size = self._validate_conversion_request(
+            request, run_dir
+        )
+        self._require_conversion_provenance(root, request)
         expected_generated = math.ceil(request.sample_count / batch_size) * batch_size
         capture_path = run_dir.resolve() / "upstream_token_ids.json"
         capture = self._read_capture(capture_path, expected_generated)
@@ -112,6 +115,10 @@ class BaseTeacherAdapter:
             token_ids = [item["token_ids"] for item in capture]
             output_format = "dlb-upstream-token-capture-v1"
             token_ids_source = "upstream"
+            token_ids_transformation = {
+                "max_length": sequence_length,
+                "operation": "validated_exact_length",
+            }
             upstream_path = capture_path
         else:
             upstream_path = run_dir.resolve() / "upstream_samples.json"
@@ -124,14 +131,22 @@ class BaseTeacherAdapter:
                     raise AdapterError("captured token batches do not match upstream generated_seqs")
                 token_ids = [item["token_ids"] for item in capture]
                 token_ids_source = "upstream"
+                token_ids_transformation = {
+                    "max_length": sequence_length,
+                    "operation": "validated_exact_length",
+                }
             else:
-                token_ids = self._retokenize(root, request.dataset_id, texts)
+                token_ids, token_ids_transformation = self._retokenize(
+                    root, request.dataset_id, texts, sequence_length
+                )
                 token_ids_source = "retokenized"
 
         dataset = self._load_data_contract(root, request.dataset_id)
         tokenizer_name = dataset["tokenizer"]
         vocab_size = self._TOKENIZER_VOCAB_SIZES[tokenizer_name]
-        self._validate_samples(texts, token_ids, expected_generated, vocab_size)
+        self._validate_samples(
+            texts, token_ids, expected_generated, vocab_size, sequence_length
+        )
 
         records = [
             SampleRecord(
@@ -153,14 +168,60 @@ class BaseTeacherAdapter:
                 "trimmed_samples": expected_generated - request.sample_count,
                 "trim_policy": "stable_prefix",
                 "token_ids_source": token_ids_source,
+                "token_ids_transformation": token_ids_transformation,
                 "tokenizer": tokenizer_name,
                 "tokenizer_revision": self._tokenizer_revision(root, tokenizer_name),
+                "checkpoint_sha256": request.checkpoint_sha256,
+                "checkpoint_lock_id": request.checkpoint_lock_id,
+                "checkpoint_selection": request.checkpoint_selection,
+                "teacher_family": request.checkpoint_teacher_family,
                 "generation_seconds_source": "unavailable_excluded_sentinel",
                 "generation_seconds_sentinel": 0.0,
                 "exclude_from_latency": True,
             },
         )
         return records
+
+    def _require_conversion_provenance(self, root: Path, request: RunRequest) -> None:
+        if (
+            not isinstance(request.checkpoint_sha256, str)
+            or len(request.checkpoint_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in request.checkpoint_sha256
+            )
+            or not isinstance(request.checkpoint_lock_id, str)
+            or not request.checkpoint_lock_id
+            or not isinstance(request.checkpoint_selection, dict)
+            or not request.checkpoint_selection
+            or not isinstance(request.checkpoint_teacher_family, str)
+            or not request.checkpoint_teacher_family
+        ):
+            raise AdapterError("runner-resolved checkpoint provenance is required")
+        registry = load_registry(root / "configs" / "experiments.yaml")
+        try:
+            support = registry.models[request.model_id].datasets[request.dataset_id]
+            canonical = _resolve_checkpoint_provenance(
+                root, request, support.train_recipe
+            )
+        except (KeyError, OSError, ValueError) as error:
+            raise AdapterError(f"canonical checkpoint provenance is invalid: {error}") from error
+        expected_family = self.teacher_families[request.model_id]
+        if canonical.teacher_family != expected_family:
+            raise AdapterError(
+                f"canonical checkpoint teacher family {canonical.teacher_family!r} "
+                f"does not match {expected_family!r}"
+            )
+        if request.checkpoint_sha256 != canonical.sha256:
+            raise AdapterError("checkpoint SHA differs from canonical checkpoint provenance")
+        if request.checkpoint_lock_id != canonical.lock_id:
+            raise AdapterError("checkpoint lock ID differs from canonical checkpoint provenance")
+        if request.checkpoint_selection != canonical.selection:
+            raise AdapterError("checkpoint selection differs from canonical checkpoint provenance")
+        if request.checkpoint_teacher_family != canonical.teacher_family:
+            raise AdapterError(
+                "checkpoint teacher family differs from canonical checkpoint provenance"
+            )
 
     def _validate_request(
         self, request: RunRequest, run_dir: Path
@@ -366,7 +427,12 @@ class BaseTeacherAdapter:
         return normalized
 
     def _validate_samples(
-        self, texts: list[object], token_ids: list[object], expected: int, vocab_size: int
+        self,
+        texts: list[object],
+        token_ids: list[object],
+        expected: int,
+        vocab_size: int,
+        sequence_length: int,
     ) -> None:
         if len(texts) != expected or len(token_ids) != expected:
             raise AdapterError(
@@ -376,6 +442,10 @@ class BaseTeacherAdapter:
         for index, (_, tokens) in enumerate(zip(texts, token_ids, strict=True)):
             if not isinstance(tokens, list) or not tokens:
                 raise AdapterError(f"empty token_ids at sample {index}")
+            if len(tokens) != sequence_length:
+                raise AdapterError(
+                    f"expected {sequence_length} tokens at sample {index}, found {len(tokens)}"
+                )
             for token in tokens:
                 if type(token) is not int or token < 0 or token >= vocab_size:
                     raise AdapterError(f"invalid token at sample {index}: {token!r}")
@@ -387,8 +457,8 @@ class BaseTeacherAdapter:
                 raise AdapterError(f"empty text at sample {index}")
 
     def _retokenize(
-        self, root: Path, dataset_id: str, texts: list[str]
-    ) -> list[list[int]]:
+        self, root: Path, dataset_id: str, texts: list[str], sequence_length: int
+    ) -> tuple[list[list[int]], dict[str, object]]:
         contract = self._load_data_contract(root, dataset_id)
         tokenizer_name = contract["tokenizer"]
         revision = self._tokenizer_revision(root, tokenizer_name)
@@ -406,10 +476,29 @@ class BaseTeacherAdapter:
             raise AdapterError(
                 f"pinned tokenizer {tokenizer_name}@{revision} is not available locally"
             ) from error
-        return [
-            list(tokenizer.encode(text, add_special_tokens=False))
-            for text in texts
-        ]
+        if tokenizer.pad_token_id is None:
+            if tokenizer.eos_token is None:
+                raise AdapterError(f"canonical tokenizer {tokenizer_name} has no padding token")
+            tokenizer.pad_token = tokenizer.eos_token
+        settings = {
+            "add_special_tokens": False,
+            "padding": "max_length",
+            "truncation": True,
+            "max_length": sequence_length,
+            "return_attention_mask": False,
+        }
+        encoded = tokenizer(texts, **settings)
+        try:
+            token_ids = [list(tokens) for tokens in encoded["input_ids"]]
+        except (KeyError, TypeError) as error:
+            raise AdapterError("pinned tokenizer returned invalid input_ids") from error
+        return token_ids, {
+            "add_special_tokens": False,
+            "max_length": sequence_length,
+            "padding": "max_length",
+            "pad_token_id": tokenizer.pad_token_id,
+            "truncation": True,
+        }
 
     def _load_data_contract(self, root: Path, dataset_id: str) -> dict[str, object]:
         path = root / "artifacts" / "data.yaml"

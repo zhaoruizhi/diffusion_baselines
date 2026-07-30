@@ -1,5 +1,9 @@
+from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -47,11 +51,82 @@ def override(command: list[str], key: str) -> str:
 
 def prepare_conversion_root(tmp_path: Path) -> Path:
     (tmp_path / "artifacts").mkdir()
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "experiments.yaml").write_text(
+        (ROOT / "configs" / "experiments.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     (tmp_path / "artifacts" / "data.yaml").write_text(
         (ROOT / "artifacts" / "data.yaml").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
+    (tmp_path / "artifacts" / "checkpoints.yaml").write_text(
+        (ROOT / "artifacts" / "checkpoints.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
     return tmp_path
+
+
+def canonical_conversion_request(root: Path, item: RunRequest) -> RunRequest:
+    selections = {
+        ("flm", "lm1b"): ("flm_lm1b_hf", None, None, "continuous_flm"),
+        ("flm", "owt"): ("flm_owt_hf", None, None, "continuous_flm"),
+        (
+            "mdlm",
+            "lm1b",
+        ): (
+            "flm_lm1b_reproductions",
+            "lm1b_MDLM_.ckpt",
+            "masked_mdlm",
+            "masked_mdlm",
+        ),
+    }
+    resource, path, selected_family, effective_family = selections[
+        (item.model_id, item.dataset_id)
+    ]
+    manifest = root / "artifacts" / "checkpoints.yaml"
+    manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    selected_path = path or "model.safetensors"
+    files = [
+        {
+            "path": f"checkpoints/fixture/{resource}/{selected_path}",
+            "size_bytes": 3,
+            "sha256": "b" * 64,
+        }
+    ]
+    (root / "artifacts" / "checkpoint_lock.json").write_text(
+        json.dumps(
+            {
+                "manifest_sha256": manifest_sha256,
+                "resources": {resource: {"status": "downloaded", "files": files}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    selection = {
+        "resource": resource,
+        "path": path,
+        "teacher_family": selected_family,
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            {
+                "manifest_sha256": manifest_sha256,
+                "selector": selection,
+                "files": files,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    return replace(
+        item,
+        checkpoint_sha256=digest,
+        checkpoint_lock_id=f"{resource}:{manifest_sha256}:{path or 'all'}",
+        checkpoint_selection=selection,
+        checkpoint_teacher_family=effective_family,
+    )
 
 
 def write_standard_output(path: Path, texts: list[str]) -> None:
@@ -62,12 +137,14 @@ def write_standard_output(path: Path, texts: list[str]) -> None:
     )
 
 
-def write_capture(path: Path, count: int, *, duplicate_id: bool = False) -> None:
+def write_capture(
+    path: Path, count: int, token_length: int, *, duplicate_id: bool = False
+) -> None:
     samples = [
         {
             "sample_id": 0 if duplicate_id and index == 1 else index,
             "text": f"sample {index}",
-            "token_ids": [index % 100 + 1],
+            "token_ids": [index % 100 + 1] * token_length,
         }
         for index in range(count)
     ]
@@ -224,23 +301,56 @@ def test_conversion_prefers_captured_token_ids_and_trims_only_ceiling_excess(
     """Catch re-tokenization despite IDs being available or nondeterministic trimming."""
 
     root = prepare_conversion_root(tmp_path)
-    item = request("flm", "owt", samples=17)
+    item = canonical_conversion_request(root, request("flm", "owt", samples=17))
     output_dir = run_dir(root, item)
     output_dir.mkdir(parents=True)
     texts = [f"sample {index}" for index in range(32)]
     write_standard_output(output_dir / "upstream_samples.json", texts)
-    write_capture(output_dir / "upstream_token_ids.json", 32)
+    write_capture(output_dir / "upstream_token_ids.json", 32, 1024)
 
     records = list(FLMAdapter().convert_outputs(item, output_dir))
 
     assert len(records) == 17
     assert [record.sample_id for record in records] == list(range(17))
-    assert records[1].token_ids == [2]
+    assert records[1].token_ids == [2] * 1024
     metadata = json.loads((output_dir / "conversion_metadata.json").read_text())
     assert metadata["token_ids_source"] == "upstream"
     assert metadata["trimmed_samples"] == 15
     assert metadata["generation_seconds_source"] == "unavailable_excluded_sentinel"
+    assert metadata["checkpoint_sha256"] == item.checkpoint_sha256
+    assert metadata["checkpoint_lock_id"] == item.checkpoint_lock_id
+    assert metadata["checkpoint_selection"] == item.checkpoint_selection
+    assert metadata["teacher_family"] == "continuous_flm"
     assert all(record.generation_seconds == 0.0 for record in records)
+
+
+def test_conversion_rejects_missing_runner_checkpoint_provenance_before_reading_outputs(
+    tmp_path: Path,
+) -> None:
+    """Catch direct conversion bypassing the runner's canonical checkpoint resolution."""
+
+    root = prepare_conversion_root(tmp_path)
+    item = request("flm", "owt", samples=1)
+    output_dir = run_dir(root, item)
+    output_dir.mkdir(parents=True)
+
+    with pytest.raises(AdapterError, match="runner-resolved checkpoint provenance is required"):
+        list(FLMAdapter().convert_outputs(item, output_dir))
+
+
+def test_conversion_rejects_wrong_teacher_family_before_reading_outputs(
+    tmp_path: Path,
+) -> None:
+    """Catch a valid checkpoint identity being relabeled as another teacher family."""
+
+    root = prepare_conversion_root(tmp_path)
+    item = canonical_conversion_request(root, request("flm", "owt", samples=1))
+    item = replace(item, checkpoint_teacher_family="continuous_rdlm")
+    output_dir = run_dir(root, item)
+    output_dir.mkdir(parents=True)
+
+    with pytest.raises(AdapterError, match="teacher family"):
+        list(FLMAdapter().convert_outputs(item, output_dir))
 
 
 def test_conversion_rejects_extra_missing_empty_duplicate_and_invalid_samples(
@@ -249,27 +359,27 @@ def test_conversion_rejects_extra_missing_empty_duplicate_and_invalid_samples(
     """Catch malformed upstream artifacts being normalized into plausible samples."""
 
     root = prepare_conversion_root(tmp_path)
-    item = request("flm", "owt", samples=17)
+    item = canonical_conversion_request(root, request("flm", "owt", samples=17))
     output_dir = run_dir(root, item)
     output_dir.mkdir(parents=True)
     write_standard_output(output_dir / "upstream_samples.json", [f"sample {i}" for i in range(33)])
-    write_capture(output_dir / "upstream_token_ids.json", 33)
+    write_capture(output_dir / "upstream_token_ids.json", 33, 1024)
     with pytest.raises(AdapterError, match="expected 32 generated samples, found 33"):
         list(FLMAdapter().convert_outputs(item, output_dir))
 
     write_standard_output(output_dir / "upstream_samples.json", [f"sample {i}" for i in range(32)])
-    write_capture(output_dir / "upstream_token_ids.json", 32, duplicate_id=True)
+    write_capture(output_dir / "upstream_token_ids.json", 32, 1024, duplicate_id=True)
     with pytest.raises(AdapterError, match="duplicate sample_id"):
         list(FLMAdapter().convert_outputs(item, output_dir))
 
-    write_capture(output_dir / "upstream_token_ids.json", 32)
+    write_capture(output_dir / "upstream_token_ids.json", 32, 1024)
     capture = json.loads((output_dir / "upstream_token_ids.json").read_text())
-    capture["samples"][0]["token_ids"] = [50257]
+    capture["samples"][0]["token_ids"] = [50257] + [1] * 1023
     (output_dir / "upstream_token_ids.json").write_text(json.dumps(capture))
     with pytest.raises(AdapterError, match="invalid token"):
         list(FLMAdapter().convert_outputs(item, output_dir))
 
-    write_capture(output_dir / "upstream_token_ids.json", 32)
+    write_capture(output_dir / "upstream_token_ids.json", 32, 1024)
     actual = json.loads((output_dir / "upstream_samples.json").read_text())
     actual["generated_seqs"][0] = "   "
     (output_dir / "upstream_samples.json").write_text(json.dumps(actual))
@@ -281,18 +391,100 @@ def test_mdlm_conversion_accepts_only_the_documented_capture_format(tmp_path: Pa
     """Catch parsing MDLM's lossy final-batch stdout representation."""
 
     root = prepare_conversion_root(tmp_path)
-    item = request("mdlm", "lm1b", samples=17)
+    item = canonical_conversion_request(root, request("mdlm", "lm1b", samples=17))
     output_dir = run_dir(root, item)
     output_dir.mkdir(parents=True)
-    write_capture(output_dir / "upstream_token_ids.json", 32)
+    write_capture(output_dir / "upstream_token_ids.json", 32, 128)
 
     records = list(MDLMAdapter().convert_outputs(item, output_dir))
     assert len(records) == 17
-    assert records[0].token_ids == [1]
+    assert records[0].token_ids == [1] * 128
 
     (output_dir / "upstream_token_ids.json").write_text(json.dumps(["not", "supported"]))
     with pytest.raises(AdapterError, match="unexpected capture format"):
         list(MDLMAdapter().convert_outputs(item, output_dir))
+
+
+@pytest.mark.parametrize(
+    ("dataset", "length", "batch_size"), [("lm1b", 128, 32), ("owt", 1024, 16)]
+)
+def test_conversion_requires_exact_canonical_token_length_for_each_dataset(
+    tmp_path: Path, dataset: str, length: int, batch_size: int
+) -> None:
+    """Catch short or long token sequences passing canonical conversion validation."""
+
+    root = prepare_conversion_root(tmp_path)
+    item = canonical_conversion_request(root, request("flm", dataset, samples=1))
+    output_dir = run_dir(root, item)
+    output_dir.mkdir(parents=True)
+    texts = [f"sample {index}" for index in range(batch_size)]
+    write_standard_output(output_dir / "upstream_samples.json", texts)
+
+    write_capture(output_dir / "upstream_token_ids.json", batch_size, length)
+    records = list(FLMAdapter().convert_outputs(item, output_dir))
+    assert len(records[0].token_ids) == length
+
+    write_capture(output_dir / "upstream_token_ids.json", batch_size, length - 1)
+    with pytest.raises(AdapterError, match=f"expected {length} tokens"):
+        list(FLMAdapter().convert_outputs(item, output_dir))
+
+    write_capture(output_dir / "upstream_token_ids.json", batch_size, length + 1)
+    with pytest.raises(AdapterError, match=f"expected {length} tokens"):
+        list(FLMAdapter().convert_outputs(item, output_dir))
+
+
+def test_text_only_conversion_pads_and_truncates_with_the_pinned_offline_tokenizer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch text fallback emitting variable-length IDs or hiding its transformation."""
+
+    class FakeTokenizer:
+        eos_token = "<eos>"
+        pad_token = None
+        pad_token_id = 50256
+
+        def __call__(self, texts, **settings):
+            assert settings == {
+                "add_special_tokens": False,
+                "padding": "max_length",
+                "truncation": True,
+                "max_length": 1024,
+                "return_attention_mask": False,
+            }
+            return {"input_ids": [[11] + [50256] * 1023 for _ in texts]}
+
+    class FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(name, **settings):
+            assert name == "gpt2"
+            assert settings == {
+                "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+                "local_files_only": True,
+            }
+            return FakeTokenizer()
+
+    monkeypatch.setitem(
+        sys.modules, "transformers", SimpleNamespace(AutoTokenizer=FakeAutoTokenizer)
+    )
+    root = prepare_conversion_root(tmp_path)
+    item = canonical_conversion_request(root, request("flm", "owt", samples=1))
+    output_dir = run_dir(root, item)
+    output_dir.mkdir(parents=True)
+    write_standard_output(
+        output_dir / "upstream_samples.json", [f"sample {index}" for index in range(16)]
+    )
+
+    records = list(FLMAdapter().convert_outputs(item, output_dir))
+    metadata = json.loads((output_dir / "conversion_metadata.json").read_text())
+
+    assert records[0].token_ids == [11] + [50256] * 1023
+    assert metadata["token_ids_transformation"] == {
+        "add_special_tokens": False,
+        "max_length": 1024,
+        "padding": "max_length",
+        "pad_token_id": 50256,
+        "truncation": True,
+    }
 
 
 def test_command_cli_dry_renders_six_models_on_both_datasets_without_writes(

@@ -59,6 +59,8 @@ class RunRequest:
     source_sha256: str | None = None
     checkpoint_sha256: str | None = None
     checkpoint_lock_id: str | None = None
+    checkpoint_selection: dict[str, object] | None = None
+    checkpoint_teacher_family: str | None = None
     adapter_identity: str | None = None
     environment: str | None = None
     device: str | None = None
@@ -69,6 +71,14 @@ class RunResult:
     status: str
     run_dir: Path
     returncode: int
+
+
+@dataclass(frozen=True)
+class CheckpointProvenance:
+    sha256: str
+    lock_id: str
+    selection: dict[str, object]
+    teacher_family: str
 
 
 def _utc_now() -> str:
@@ -131,9 +141,9 @@ def _adapter_identity(adapter: SampleAdapter, request: RunRequest) -> str:
     return f"{declared_identity}|{class_identity}|{implementation}"
 
 
-def _resolve_checkpoint_identity(
+def _resolve_checkpoint_provenance(
     root: Path, request: RunRequest, recipe_id: str | None
-) -> tuple[str | None, str | None]:
+) -> CheckpointProvenance:
     """Resolve a coverage resource to the exact verified lock-file inventory hash."""
 
     manifest_path = root / "artifacts" / "checkpoints.yaml"
@@ -159,7 +169,12 @@ def _resolve_checkpoint_identity(
         digest = _canonical_sha256(
             {"manifest_sha256": manifest_sha256, "selector": selector, "files": inventory}
         )
-        return digest, f"recipe:{recipe_id}:{manifest_sha256}"
+        return CheckpointProvenance(
+            sha256=digest,
+            lock_id=f"recipe:{recipe_id}:{manifest_sha256}",
+            selection=selector,
+            teacher_family=recipe.teacher_family,
+        )
     if coverage is None:
         raise ValueError(
             f"canonical checkpoint selection is missing for {request.model_id}/{request.dataset_id}"
@@ -203,7 +218,22 @@ def _resolve_checkpoint_identity(
             "files": sorted(inventory, key=lambda item: str(item["path"])),
         }
     )
-    return digest, f"{coverage.resource}:{manifest_sha256}:{coverage.path or 'all'}"
+    resource = manifest.resources[coverage.resource]
+    return CheckpointProvenance(
+        sha256=digest,
+        lock_id=f"{coverage.resource}:{manifest_sha256}:{coverage.path or 'all'}",
+        selection=selector,
+        teacher_family=coverage.teacher_family or resource.teacher_family,
+    )
+
+
+def _resolve_checkpoint_identity(
+    root: Path, request: RunRequest, recipe_id: str | None
+) -> tuple[str, str]:
+    """Compatibility wrapper for callers that need only the content and lock identities."""
+
+    provenance = _resolve_checkpoint_provenance(root, request, recipe_id)
+    return provenance.sha256, provenance.lock_id
 
 
 def _checkpoint_inventory(root: Path, output: Path) -> list[dict[str, object]]:
@@ -281,13 +311,23 @@ def _resolve_request(request: RunRequest, root: Path, adapter: SampleAdapter | N
     if request.config_sha256 is not None and request.config_sha256 != config_sha256:
         raise ValueError("config SHA assertion differs from canonical registry")
 
-    checkpoint_sha256, checkpoint_lock_id = _resolve_checkpoint_identity(
+    checkpoint = _resolve_checkpoint_provenance(
         root, request, support.train_recipe
     )
-    if request.checkpoint_sha256 is not None and request.checkpoint_sha256 != checkpoint_sha256:
+    if request.checkpoint_sha256 is not None and request.checkpoint_sha256 != checkpoint.sha256:
         raise ValueError("checkpoint SHA assertion differs from canonical checkpoint identity")
-    if request.checkpoint_lock_id is not None and request.checkpoint_lock_id != checkpoint_lock_id:
+    if request.checkpoint_lock_id is not None and request.checkpoint_lock_id != checkpoint.lock_id:
         raise ValueError("checkpoint lock assertion differs from canonical checkpoint identity")
+    if (
+        request.checkpoint_selection is not None
+        and request.checkpoint_selection != checkpoint.selection
+    ):
+        raise ValueError("checkpoint selection assertion differs from canonical selection")
+    if (
+        request.checkpoint_teacher_family is not None
+        and request.checkpoint_teacher_family != checkpoint.teacher_family
+    ):
+        raise ValueError("checkpoint teacher family differs from canonical selection")
     resolved_adapter = adapter or load_adapter(model.adapter)
     resolved = RunRequest(
         **{
@@ -296,8 +336,10 @@ def _resolve_request(request: RunRequest, root: Path, adapter: SampleAdapter | N
             "source_sha256": source_sha256,
             "adapter_identity": _adapter_identity(resolved_adapter, request),
             "environment": model.environment,
-            "checkpoint_sha256": checkpoint_sha256,
-            "checkpoint_lock_id": checkpoint_lock_id,
+            "checkpoint_sha256": checkpoint.sha256,
+            "checkpoint_lock_id": checkpoint.lock_id,
+            "checkpoint_selection": checkpoint.selection,
+            "checkpoint_teacher_family": checkpoint.teacher_family,
         }
     )
     if resolved.checkpoint_sha256 is None or resolved.checkpoint_lock_id is None:
@@ -320,6 +362,8 @@ def _identity(request: RunRequest, command: list[str]) -> dict[str, object]:
         "source_sha256": request.source_sha256,
         "checkpoint_sha256": request.checkpoint_sha256,
         "checkpoint_lock_id": request.checkpoint_lock_id,
+        "checkpoint_selection": request.checkpoint_selection,
+        "checkpoint_teacher_family": request.checkpoint_teacher_family,
         "command_sha256": _canonical_sha256(command),
     }
 
@@ -427,6 +471,8 @@ def run_experiment(
             "source_sha256": request.source_sha256,
             "checkpoint_sha256": request.checkpoint_sha256,
             "checkpoint_lock_id": request.checkpoint_lock_id,
+            "checkpoint_selection": request.checkpoint_selection,
+            "checkpoint_teacher_family": request.checkpoint_teacher_family,
             "environment": _environment_evidence(),
             "stdout_log": str(stdout_path),
             "stderr_log": str(stderr_path),
