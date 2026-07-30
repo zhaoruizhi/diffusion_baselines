@@ -182,6 +182,85 @@ class BaseTeacherAdapter:
         )
         return records
 
+    def _convert_capture_outputs(
+        self,
+        request: RunRequest,
+        run_dir: Path,
+        *,
+        retokenize_inexact_rows: bool = False,
+    ) -> Iterable[SampleRecord]:
+        """Convert an exact project capture produced around a pinned sampler."""
+
+        root, sequence_length, _ = self._validate_conversion_request(request, run_dir)
+        self._require_conversion_provenance(root, request)
+        capture_path = run_dir.resolve() / "upstream_token_ids.json"
+        capture = self._read_capture(capture_path, request.sample_count)
+        if not capture:
+            raise AdapterError(f"token capture is missing or empty: {capture_path}")
+        texts = [item["text"] for item in capture]
+        upstream_token_ids = [item["token_ids"] for item in capture]
+        token_ids = upstream_token_ids
+        token_ids_source = "upstream"
+        token_ids_transformation: dict[str, object] = {
+            "max_length": sequence_length,
+            "operation": "validated_exact_length",
+        }
+        if retokenize_inexact_rows and any(
+            not isinstance(tokens, list) or len(tokens) != sequence_length
+            for tokens in upstream_token_ids
+        ):
+            token_ids, token_ids_transformation = self._retokenize(
+                root, request.dataset_id, texts, sequence_length
+            )
+            token_ids_transformation = {
+                **token_ids_transformation,
+                "reason": "upstream_ids_not_canonical_length",
+            }
+            token_ids_source = "retokenized"
+
+        dataset = self._load_data_contract(root, request.dataset_id)
+        tokenizer_name = dataset["tokenizer"]
+        self._validate_samples(
+            texts,
+            token_ids,
+            request.sample_count,
+            self._TOKENIZER_VOCAB_SIZES[tokenizer_name],
+            sequence_length,
+        )
+        records = [
+            SampleRecord(
+                sample_id=index,
+                text=texts[index],
+                token_ids=token_ids[index],
+                seed=request.seed,
+                generation_seconds=0.0,
+            )
+            for index in range(request.sample_count)
+        ]
+        atomic_json_write(
+            run_dir.resolve() / "conversion_metadata.json",
+            {
+                "format": "dlb-upstream-token-capture-v1",
+                "upstream_output": str(capture_path),
+                "generated_samples": request.sample_count,
+                "requested_samples": request.sample_count,
+                "trimmed_samples": 0,
+                "trim_policy": "none_exact_count",
+                "token_ids_source": token_ids_source,
+                "token_ids_transformation": token_ids_transformation,
+                "tokenizer": tokenizer_name,
+                "tokenizer_revision": self._tokenizer_revision(root, tokenizer_name),
+                "checkpoint_sha256": request.checkpoint_sha256,
+                "checkpoint_lock_id": request.checkpoint_lock_id,
+                "checkpoint_selection": request.checkpoint_selection,
+                "teacher_family": request.checkpoint_teacher_family,
+                "generation_seconds_source": "unavailable_excluded_sentinel",
+                "generation_seconds_sentinel": 0.0,
+                "exclude_from_latency": True,
+            },
+        )
+        return records
+
     def _require_conversion_provenance(self, root: Path, request: RunRequest) -> None:
         if (
             not isinstance(request.checkpoint_sha256, str)

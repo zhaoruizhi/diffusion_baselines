@@ -10,7 +10,9 @@ from dlb.adapters.base import AdapterError, BaseTeacherAdapter
 from dlb.adapters.candi import CANDIAdapter
 from dlb.adapters.duo import DuoAdapter
 from dlb.adapters.flm import FLMAdapter
+from dlb.adapters.langflow import LangFlowAdapter
 from dlb.adapters.mdlm import MDLMAdapter
+from dlb.adapters.rdlm import RDLMAdapter
 from dlb.registry import load_registry
 from dlb.runner import RunRequest
 
@@ -22,6 +24,8 @@ ADAPTERS: dict[str, BaseTeacherAdapter] = {
     "duo_dcd": DuoAdapter(),
     "mdlm": MDLMAdapter(),
     "candi": CANDIAdapter(),
+    "langflow": LangFlowAdapter(),
+    "rdlm": RDLMAdapter(),
 }
 
 
@@ -64,7 +68,7 @@ def _record(
             "status": "unsupported",
             "model": model_id,
             "dataset": dataset_id,
-            "reason": "Task 7 does not provide an adapter for this model",
+            "reason": "no command adapter is implemented for this model",
         }
     request = RunRequest(
         run_id=f"{model_id}-{dataset_id}-steps-{step_count}",
@@ -108,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--datasets", type=_csv, required=True)
     parser.add_argument("--steps", type=int, default=32)
     parser.add_argument("--num-samples", type=int, default=1024)
-    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dry-run", action="store_true")
     arguments = parser.parse_args(argv)
     root = arguments.root.resolve()
