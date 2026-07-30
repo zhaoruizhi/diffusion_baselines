@@ -169,6 +169,7 @@ if failure and any(failure in argument for argument in arguments):
     raise SystemExit(23)
 
 if arguments[:1] == ["run"]:
+    probe_source = sys.stdin.read()
     output = os.environ.get("FAKE_PROBE_OUTPUT")
     if output is not None:
         print(output)
@@ -182,7 +183,16 @@ if arguments[:1] == ["run"]:
             "cuda_available": True,
             "imports": {module: True for module in modules},
         }
+        if os.environ.get("FAKE_UNHEALTHY_PROBE"):
+            payload["imports"][modules[0]] = False
+            payload["import_errors"] = {modules[0]: "simulated import failure"}
         print("DLB_ENV_PROBE_V1:" + json.dumps(payload, sort_keys=True))
+        if (
+            os.environ.get("FAKE_APPEND_CONDA_DIAGNOSTIC")
+            and "raise SystemExit(0)" not in probe_source
+        ):
+            print("CondaError: child process exited with status 1", file=sys.stderr)
+            raise SystemExit(23)
 """
     )
     command.chmod(0o755)
@@ -374,6 +384,73 @@ def test_verify_all_rejects_untrusted_manager_stdout(fake_conda, tmp_path, probe
     ]
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"environment":"dlb-langflow","python":"3.11","torch":NaN,"torch_cuda":"12.4","cuda_available":true,"imports":{"einops":true,"huggingface_hub":true,"safetensors":true,"transformers":true}}',
+        '{"environment":"dlb-langflow","python":"3.11","torch":"2.5.1","torch_cuda":Infinity,"cuda_available":true,"imports":{"einops":true,"huggingface_hub":true,"safetensors":true,"transformers":true}}',
+        '{"environment":"dlb-langflow","python":"3.11","torch":"2.5.1","torch_cuda":"12.4","cuda_available":true,"imports":{"einops":true,"huggingface_hub":true,"safetensors":true,"transformers":true},"unexpected":true}',
+        '{"environment":"dlb-langflow","python":"3.11","torch":"2.5.1","torch_cuda":"12.4","cuda_available":true,"imports":{"einops":true,"huggingface_hub":true,"safetensors":true,"transformers":true,"unexpected":true}}',
+        '{"environment":"dlb-langflow","python":"3.11","torch":"2.5.1","torch_cuda":"12.4","cuda_available":1,"imports":{"einops":true,"huggingface_hub":true,"safetensors":true,"transformers":true}}',
+        '{"environment":"dlb-langflow","python":"3.11","torch":"2.5.1","torch_cuda":"12.4","cuda_available":true,"imports":{"einops":true,"einops":false,"huggingface_hub":true,"safetensors":true,"transformers":true}}',
+        '{"environment":"dlb-langflow","python":"3.11","torch":"2.5.1","torch_cuda":"12.4","cuda_available":true,"imports":{"einops":true,"huggingface_hub":true,"safetensors":true}}',
+    ],
+    ids=[
+        "nan",
+        "infinity",
+        "unknown-top-level-field",
+        "unknown-import-field",
+        "bool-as-int",
+        "duplicate-requested-import",
+        "missing-requested-import",
+    ],
+)
+def test_verify_all_rejects_invalid_probe_schema(fake_conda, tmp_path, payload):
+    completed, _ = run_script(
+        "verify_all.sh",
+        fake_conda,
+        tmp_path,
+        ["dlb-langflow"],
+        FAKE_PROBE_OUTPUT="DLB_ENV_PROBE_V1:" + payload,
+    )
+
+    records = [json.loads(line) for line in completed.stdout.splitlines()]
+    assert completed.returncode != 0
+    assert records == [
+        {
+            "environment": "dlb-langflow",
+            "python": None,
+            "torch": None,
+            "torch_cuda": None,
+            "cuda_available": False,
+            "imports": {},
+            "error": "verification probe failed",
+        }
+    ]
+    assert "NaN" not in completed.stdout
+    assert "Infinity" not in completed.stdout
+
+
+def test_verify_all_preserves_unhealthy_probe_when_manager_adds_diagnostic(
+    fake_conda, tmp_path
+):
+    completed, _ = run_script(
+        "verify_all.sh",
+        fake_conda,
+        tmp_path,
+        ["dlb-langflow"],
+        FAKE_UNHEALTHY_PROBE="1",
+        FAKE_APPEND_CONDA_DIAGNOSTIC="1",
+    )
+
+    records = [json.loads(line) for line in completed.stdout.splitlines()]
+    assert completed.returncode != 0
+    assert records[0]["imports"]["einops"] is False
+    assert records[0]["import_errors"] == {"einops": "simulated import failure"}
+    assert "CondaError" not in completed.stdout
+    assert "CondaError" not in completed.stderr
+
+
 def test_verify_all_rejects_echo_manager_output(fake_conda, tmp_path):
     completed, _ = run_script(
         "verify_all.sh", fake_conda, tmp_path, ["dlb-langflow"], DLB_CONDA="/bin/echo"
@@ -398,37 +475,39 @@ def test_verify_all_escapes_unknown_environment_names(fake_conda, tmp_path):
 def test_verify_all_checks_the_complete_method_import_mapping(fake_conda, tmp_path):
     expected_imports = {
         "dlb-flm": {
-            "datasets", "einops", "flash_attn", "fsspec", "hydra", "lightning",
-            "omegaconf", "rich", "scipy", "timm", "tokenizers", "torchmetrics",
-            "tqdm", "transformers", "triton", "wandb",
+            "datasets", "einops", "entmax", "flash_attn", "fsspec", "huggingface_hub",
+            "hydra", "lightning", "numpy", "omegaconf", "requests", "rich", "scipy",
+            "timm", "tokenizers", "torchmetrics", "tqdm", "transformers", "triton", "wandb",
         },
         "dlb-langflow": {"einops", "huggingface_hub", "safetensors", "transformers"},
         "dlb-duo": {
-            "datasets", "einops", "flash_attn", "fsspec", "h5py", "hydra",
-            "lightning", "omegaconf", "rich", "timm", "tokenizers", "torchmetrics",
-                "torchvision", "tqdm", "transformers", "triton", "wandb",
+            "datasets", "einops", "flash_attn", "fsspec", "h5py", "huggingface_hub",
+            "hydra", "lightning", "numpy", "omegaconf", "requests", "rich", "scipy", "timm",
+            "tokenizers", "torchmetrics", "torchvision", "tqdm", "transformers", "triton", "wandb",
         },
         "dlb-mdlm": {
-            "causal_conv1d", "datasets", "einops", "flash_attn", "fsspec", "hydra",
-            "lightning", "mamba_ssm", "omegaconf", "rich", "timm", "transformers", "wandb",
+            "causal_conv1d", "datasets", "einops", "flash_attn", "fsspec", "huggingface_hub",
+            "hydra", "lightning", "mamba_ssm", "numpy", "omegaconf", "requests", "rich", "timm",
+            "tokenizers", "torchmetrics", "transformers", "wandb",
         },
         "dlb-candi": {
-            "datasets", "einops", "evaluate", "flash_attn", "fsspec", "hydra", "lightning",
-            "omegaconf", "rich", "scipy", "tokenizers", "torchmetrics", "tqdm", "transformers",
+            "datasets", "einops", "evaluate", "flash_attn", "fsspec", "huggingface_hub", "hydra",
+            "lightning", "numpy", "omegaconf", "requests", "rich", "scipy", "tokenizers", "torchmetrics",
+            "tqdm", "transformers",
         },
         "dlb-rdlm": {
-                "accelerate", "datasets", "einops", "fsspec", "hydra", "numpy", "omegaconf",
-                "scipy", "tokenizers", "tqdm", "transformers", "wandb",
+            "accelerate", "datasets", "einops", "fsspec", "huggingface_hub", "hydra", "numpy",
+            "omegaconf", "requests", "scipy", "tokenizers", "tqdm", "transformers", "wandb",
         },
         "dlb-sdtt": {
             "datasets", "einops", "flash_attn", "fsspec", "huggingface_hub", "hydra", "lightning",
-            "loguru", "mauve", "omegaconf", "pandas", "tensorboard", "timm", "tokenizers",
-            "torchdata", "tqdm", "transformers", "wandb",
+            "loguru", "mauve", "numpy", "omegaconf", "pandas", "requests", "safetensors", "tensorboard",
+            "timm", "tokenizers", "torchdata", "tqdm", "transformers", "wandb",
         },
         "dlb-di4c": {
             "datasets", "einops", "flash_attn", "fsspec", "huggingface_hub", "hydra", "lightning",
-            "loguru", "mauve", "omegaconf", "pandas", "tensorboard", "timm", "tokenizers",
-            "torchdata", "tqdm", "transformers", "wandb",
+            "loguru", "mauve", "numpy", "omegaconf", "pandas", "requests", "safetensors", "tensorboard",
+            "timm", "tokenizers", "torchdata", "tqdm", "transformers", "wandb",
         },
         "dlb-eval": {"accelerate", "datasets", "evaluate", "fsspec", "mauve", "sacrebleu", "scipy", "tokenizers", "transformers"},
     }

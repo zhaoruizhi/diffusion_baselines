@@ -25,13 +25,13 @@ fi
 
 method_imports() {
   case "$1" in
-    dlb-flm) printf '%s\n' 'datasets einops flash_attn fsspec hydra lightning omegaconf rich scipy timm tokenizers torchmetrics tqdm transformers triton wandb' ;;
+    dlb-flm) printf '%s\n' 'datasets einops entmax flash_attn fsspec huggingface_hub hydra lightning numpy omegaconf requests rich scipy timm tokenizers torchmetrics tqdm transformers triton wandb' ;;
     dlb-langflow) printf '%s\n' 'einops huggingface_hub safetensors transformers' ;;
-    dlb-duo) printf '%s\n' 'datasets einops flash_attn fsspec h5py hydra lightning omegaconf rich timm tokenizers torchmetrics torchvision tqdm transformers triton wandb' ;;
-    dlb-mdlm) printf '%s\n' 'causal_conv1d datasets einops flash_attn fsspec hydra lightning mamba_ssm omegaconf rich timm transformers wandb' ;;
-    dlb-candi) printf '%s\n' 'datasets einops evaluate flash_attn fsspec hydra lightning omegaconf rich scipy tokenizers torchmetrics tqdm transformers' ;;
-    dlb-rdlm) printf '%s\n' 'accelerate datasets einops fsspec hydra numpy omegaconf scipy tokenizers tqdm transformers wandb' ;;
-    dlb-sdtt|dlb-di4c) printf '%s\n' 'datasets einops flash_attn fsspec huggingface_hub hydra lightning loguru mauve omegaconf pandas tensorboard timm tokenizers torchdata tqdm transformers wandb' ;;
+    dlb-duo) printf '%s\n' 'datasets einops flash_attn fsspec h5py huggingface_hub hydra lightning numpy omegaconf requests rich scipy timm tokenizers torchmetrics torchvision tqdm transformers triton wandb' ;;
+    dlb-mdlm) printf '%s\n' 'causal_conv1d datasets einops flash_attn fsspec huggingface_hub hydra lightning mamba_ssm numpy omegaconf requests rich timm tokenizers torchmetrics transformers wandb' ;;
+    dlb-candi) printf '%s\n' 'datasets einops evaluate flash_attn fsspec huggingface_hub hydra lightning numpy omegaconf requests rich scipy tokenizers torchmetrics tqdm transformers' ;;
+    dlb-rdlm) printf '%s\n' 'accelerate datasets einops fsspec huggingface_hub hydra numpy omegaconf requests scipy tokenizers tqdm transformers wandb' ;;
+    dlb-sdtt|dlb-di4c) printf '%s\n' 'datasets einops flash_attn fsspec huggingface_hub hydra lightning loguru mauve numpy omegaconf pandas requests safetensors tensorboard timm tokenizers torchdata tqdm transformers wandb' ;;
     dlb-eval) printf '%s\n' 'accelerate datasets evaluate fsspec mauve sacrebleu scipy tokenizers transformers' ;;
     *) return 1 ;;
   esac
@@ -50,7 +50,7 @@ print(json.dumps({
     "cuda_available": False,
     "imports": {},
     "error": sys.argv[2],
-}, sort_keys=True))
+}, sort_keys=True, allow_nan=False))
 PY
 }
 
@@ -65,28 +65,67 @@ expected_modules = modules.split()
 lines = raw.splitlines()
 if len(lines) != 1 or not lines[0].startswith(marker):
     raise SystemExit(2)
+
+
+def reject_constant(value):
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 try:
-    record = json.loads(lines[0][len(marker):])
-except json.JSONDecodeError:
+    record = json.loads(
+        lines[0][len(marker):],
+        parse_constant=reject_constant,
+        object_pairs_hook=reject_duplicate_keys,
+    )
+except (json.JSONDecodeError, ValueError):
     raise SystemExit(2)
 if not isinstance(record, dict) or record.get("environment") != environment:
     raise SystemExit(2)
 required = {"environment", "python", "torch", "torch_cuda", "cuda_available", "imports"}
-if not required <= record.keys():
+optional = {"torch_error", "cuda_error", "import_errors"}
+if not required <= record.keys() or not set(record) <= required | optional:
     raise SystemExit(2)
-if not isinstance(record["python"], str):
+if type(record["python"]) is not str:
     raise SystemExit(2)
-if not (isinstance(record["torch"], str) or record["torch"] is None):
+if not (type(record["torch"]) is str or record["torch"] is None):
     raise SystemExit(2)
-if not (isinstance(record["torch_cuda"], str) or record["torch_cuda"] is None):
+if not (type(record["torch_cuda"]) is str or record["torch_cuda"] is None):
     raise SystemExit(2)
-if not isinstance(record["cuda_available"], bool) or not isinstance(record["imports"], dict):
+if type(record["cuda_available"]) is not bool or type(record["imports"]) is not dict:
     raise SystemExit(2)
 if set(record["imports"]) != set(expected_modules):
     raise SystemExit(2)
-if not all(isinstance(value, bool) for value in record["imports"].values()):
+if not all(type(value) is bool for value in record["imports"].values()):
     raise SystemExit(2)
-print(json.dumps(record, sort_keys=True))
+if "torch_error" in record and (
+    type(record["torch_error"]) is not str or record["torch"] is not None
+):
+    raise SystemExit(2)
+if "cuda_error" in record and (
+    type(record["cuda_error"]) is not str or record["cuda_available"]
+):
+    raise SystemExit(2)
+if "import_errors" in record:
+    errors = record["import_errors"]
+    failed_modules = {name for name, available in record["imports"].items() if not available}
+    if (
+        type(errors) is not dict
+        or set(errors) != failed_modules
+        or not all(type(value) is str for value in errors.values())
+    ):
+        raise SystemExit(2)
+elif not all(record["imports"].values()):
+    raise SystemExit(2)
+print(json.dumps(record, sort_keys=True, allow_nan=False))
 healthy = record["cuda_available"] and all(record["imports"].values()) and record["torch"] is not None
 raise SystemExit(0 if healthy else 1)
 PY
@@ -100,9 +139,15 @@ for environment in "${ENVIRONMENTS[@]}"; do
     continue
   fi
 
+  if ! probe_stderr="$(mktemp "${TMPDIR:-/tmp}/dlb-env-probe.XXXXXX")"; then
+    emit_failure "${environment}" "verification probe failed"
+    failures+=("${environment}")
+    continue
+  fi
+
   probe_output=""
   manager_status=0
-  probe_output="$("${CONDA_BIN}" run -n "${environment}" python - "${environment}" ${imports} <<'PY' 2>&1
+  probe_output="$("${CONDA_BIN}" run -n "${environment}" python - "${environment}" ${imports} <<'PY' 2>"${probe_stderr}"
 import importlib
 import json
 import platform
@@ -119,7 +164,6 @@ record = {
     "cuda_available": False,
     "imports": {},
 }
-failed = False
 try:
     import torch
 
@@ -128,10 +172,8 @@ try:
     record["cuda_available"] = torch.cuda.is_available()
     if not record["cuda_available"]:
         record["cuda_error"] = "CUDA is unavailable"
-        failed = True
 except Exception as error:
     record["torch_error"] = str(error)
-    failed = True
 
 for module in modules:
     try:
@@ -140,18 +182,24 @@ for module in modules:
     except Exception as error:
         record["imports"][module] = False
         record.setdefault("import_errors", {})[module] = str(error)
-        failed = True
 
-print(marker + json.dumps(record, sort_keys=True))
-raise SystemExit(1 if failed else 0)
+print(marker + json.dumps(record, sort_keys=True, allow_nan=False))
+raise SystemExit(0)
 PY
 )" || manager_status=$?
+  rm -f -- "${probe_stderr}"
+
+  if ((manager_status != 0)); then
+    emit_failure "${environment}" "verification probe failed"
+    failures+=("${environment}")
+    continue
+  fi
 
   probe_status=0
   record="$(validate_probe "${environment}" "${imports}" "${probe_output}")" || probe_status=$?
   if ((probe_status <= 1)); then
     printf '%s\n' "${record}"
-    if ((manager_status != 0 || probe_status != 0)); then
+    if ((probe_status != 0)); then
       failures+=("${environment}")
     fi
   else
