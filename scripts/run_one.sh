@@ -42,38 +42,17 @@ if [[ ! "$steps" =~ ^[0-9]+$ || ! "$num_samples" =~ ^[1-9][0-9]*$ || ! "$seed" =
   exit 2
 fi
 
-# The canonical registry format is deliberately simple; extract only this model's
-# category, environment, and selected dataset status without evaluating YAML.
-registry="$DLB_ROOT/configs/experiments.yaml"
-if [[ ! -f "$registry" ]]; then echo "missing registry: $registry" >&2; exit 2; fi
-registry_row="$({
-  awk -v wanted_model="$model" -v wanted_dataset="$dataset" '
-    $1 == wanted_model ":" { active=1; wanted=0; next }
-    active && /^  [a-zA-Z0-9_]+:/ { exit }
-    active && $1 == "category:" { category=$2 }
-    active && $1 == "environment:" { environment=$2 }
-    active && $1 == wanted_dataset ":" {
-      wanted=1
-      if ($0 ~ /status: supported/) status="supported"
-      else if ($0 ~ /status: unsupported/) status="unsupported"
-      next
-    }
-    active && wanted && /^      [a-zA-Z0-9_]+:/ { wanted=0 }
-    active && wanted && $1 == "status:" { status=$2 }
-    END { if (active && category != "" && environment != "" && status != "") print category, environment, status }
-  ' "$registry"
-})"
-read -r category environment status <<<"$registry_row"
-if [[ -z "${category:-}" || -z "${environment:-}" ]]; then
-  echo "unknown model/dataset cell: $model/$dataset" >&2; exit 2
+DLB_PYTHON="${DLB_PYTHON:-python}"
+if environment="$(PYTHONPATH="$DLB_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$DLB_PYTHON" -m dlb.runner \
+  --root "$DLB_ROOT" --model "$model" --dataset "$dataset" --steps "$steps" \
+  --num-samples "$num_samples" --seed "$seed" --validate-only)"; then
+  :
+else
+  exit $?
 fi
-if [[ "$status" != "supported" ]]; then
-  echo "unsupported model/dataset cell: $model/$dataset" >&2; exit 2
+if [[ ! "$environment" =~ ^[a-z][a-z0-9-]*$ ]]; then
+  echo "registry validation returned an unsafe environment name" >&2; exit 2
 fi
-case "$category:$steps" in
-  many:1|many:2|many:4|many:8|many:16|many:32|many:1024|few:1|few:2|few:4|few:8|few:16|few:32) ;;
-  *) echo "invalid step count $steps for $category category" >&2; exit 2 ;;
-esac
 
 runner_args=(--root "$DLB_ROOT" --model "$model" --dataset "$dataset" --steps "$steps" --num-samples "$num_samples" --seed "$seed")
 if [[ -n "$device" ]]; then runner_args+=(--device "$device"); fi

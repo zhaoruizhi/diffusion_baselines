@@ -78,6 +78,18 @@ def open_safe_output(path: Path):
     return os.fdopen(descriptor, "wb")
 
 
+def remove_safe_file(path: Path) -> None:
+    """Remove one regular artifact and durably record the directory update."""
+
+    _ensure_safe_directory(path.parent)
+    _require_regular_or_missing(path)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+    _fsync_directory(path.parent)
+
+
 def _fsync_directory(directory: Path) -> None:
     if os.name != "posix":
         return

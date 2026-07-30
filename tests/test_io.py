@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,26 @@ def test_writer_counts_one_record_from_a_generator(tmp_path: Path) -> None:
 
     assert count == 1
     assert validate_samples(path, expected=1) == 1
+
+
+@pytest.mark.parametrize("timing", [True, 1, Decimal("0.1"), "0.1", float("nan"), float("inf")])
+def test_writer_rejects_non_float_or_nonfinite_generation_time(tmp_path: Path, timing: object) -> None:
+    """Catch coercive timing values before they enter a published sample artifact."""
+
+    record = make_records(1)[0]
+    record["generation_seconds"] = timing
+
+    with pytest.raises(SampleValidationError, match="generation_seconds"):
+        write_samples_atomic(tmp_path / "samples.jsonl", [record])
+
+
+def test_validator_rejects_integer_generation_time_from_json(tmp_path: Path) -> None:
+    """Catch a JSON numeric integer accepted as a timing float during streamed validation."""
+
+    record = make_records(1)[0]
+    record["generation_seconds"] = 1
+    path = tmp_path / "samples.jsonl"
+    path.write_text(json.dumps(record) + "\n")
+
+    with pytest.raises(SampleValidationError, match="generation_seconds"):
+        validate_samples(path, expected=1)

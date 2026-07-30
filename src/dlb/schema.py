@@ -1,5 +1,6 @@
 """Typed, serializable records produced by baseline runs."""
 
+import math
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictInt, field_validator
@@ -23,6 +24,13 @@ class SampleRecord(StrictModel):
     def require_non_whitespace_text(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("text must not be empty or whitespace")
+        return value
+
+    @field_validator("generation_seconds", mode="before")
+    @classmethod
+    def require_builtin_finite_float(cls, value: object) -> object:
+        if type(value) is not float or not math.isfinite(value) or value < 0:
+            raise ValueError("generation_seconds must be a finite non-negative built-in float")
         return value
 
 

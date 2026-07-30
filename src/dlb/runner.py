@@ -16,6 +16,7 @@ import platform
 import socket
 import stat
 import subprocess
+import sys
 from typing import Iterable, Protocol, Sequence
 
 from dlb.checkpoints import load_checkpoint_manifest
@@ -24,6 +25,7 @@ from dlb.io import (
     atomic_json_write,
     ensure_safe_directory,
     open_safe_output,
+    remove_safe_file,
     sha256_file,
     validate_samples,
     write_samples_atomic,
@@ -113,10 +115,20 @@ def _environment_evidence() -> dict[str, object]:
 
 
 def _adapter_identity(adapter: SampleAdapter, request: RunRequest) -> str:
-    source_path = inspect.getsourcefile(type(adapter))
+    del request
+    declared_identity = getattr(adapter, "identity", None)
+    if not isinstance(declared_identity, str) or not declared_identity:
+        raise ValueError("adapter must declare a non-empty identity")
+    try:
+        source_path = inspect.getsourcefile(type(adapter))
+    except (OSError, TypeError):
+        source_path = None
+    class_identity = f"{type(adapter).__module__}:{type(adapter).__qualname__}"
     if source_path is not None and Path(source_path).is_file():
-        return f"{type(adapter).__module__}:{sha256_file(Path(source_path))}"
-    return getattr(adapter, "identity", f"{type(adapter).__module__}:{type(adapter).__qualname__}")
+        implementation = sha256_file(Path(source_path))
+    else:
+        implementation = "source-unavailable"
+    return f"{declared_identity}|{class_identity}|{implementation}"
 
 
 def _resolve_checkpoint_identity(
@@ -124,11 +136,9 @@ def _resolve_checkpoint_identity(
 ) -> tuple[str | None, str | None]:
     """Resolve a coverage resource to the exact verified lock-file inventory hash."""
 
-    if request.checkpoint_sha256 is not None and request.checkpoint_lock_id is not None:
-        return request.checkpoint_sha256, request.checkpoint_lock_id
     manifest_path = root / "artifacts" / "checkpoints.yaml"
     if not manifest_path.is_file():
-        return request.checkpoint_sha256, request.checkpoint_lock_id
+        raise ValueError("canonical checkpoint manifest is missing")
     manifest = load_checkpoint_manifest(manifest_path)
     coverage = manifest.coverage.get((request.model_id, request.dataset_id))
     manifest_sha256 = sha256_file(manifest_path)
@@ -151,10 +161,12 @@ def _resolve_checkpoint_identity(
         )
         return digest, f"recipe:{recipe_id}:{manifest_sha256}"
     if coverage is None:
-        return request.checkpoint_sha256, request.checkpoint_lock_id
+        raise ValueError(
+            f"canonical checkpoint selection is missing for {request.model_id}/{request.dataset_id}"
+        )
     lock = _safe_json_load(root / "artifacts" / "checkpoint_lock.json")
     if lock is None:
-        return request.checkpoint_sha256, request.checkpoint_lock_id
+        raise ValueError("canonical checkpoint lock is missing or invalid")
     if lock.get("manifest_sha256") != manifest_sha256:
         raise ValueError("checkpoint lock does not match the current checkpoint manifest")
     resources = lock.get("resources")
@@ -237,50 +249,53 @@ def load_adapter(adapter_id: str) -> SampleAdapter:
 
 def _resolve_request(request: RunRequest, root: Path, adapter: SampleAdapter | None) -> tuple[RunRequest, SampleAdapter]:
     registry_path = root / "configs" / "experiments.yaml"
-    model = None
-    if registry_path.is_file():
-        registry = load_registry(registry_path)
-        try:
-            model = registry.models[request.model_id]
-            support = model.datasets[request.dataset_id]
-        except KeyError as error:
-            raise ValueError(f"unknown model/dataset cell: {request.model_id}/{request.dataset_id}") from error
-        if support.status != "supported":
-            raise ValueError(f"unsupported model/dataset cell: {request.model_id}/{request.dataset_id}")
-        if request.step_count not in registry.step_grids[model.category]:
-            raise ValueError(f"invalid step count {request.step_count} for {model.category} category")
+    if not registry_path.is_file():
+        raise ValueError("canonical registry is missing: configs/experiments.yaml")
+    registry = load_registry(registry_path)
+    try:
+        model = registry.models[request.model_id]
+        support = model.datasets[request.dataset_id]
+    except KeyError as error:
+        raise ValueError(f"unknown model/dataset cell: {request.model_id}/{request.dataset_id}") from error
+    if support.status != "supported":
+        raise ValueError(f"unsupported model/dataset cell: {request.model_id}/{request.dataset_id}")
+    if request.step_count not in registry.step_grids[model.category]:
+        raise ValueError(f"invalid step count {request.step_count} for {model.category} category")
+    if request.environment is not None and request.environment != model.environment:
+        raise ValueError("environment assertion differs from canonical registry")
     if request.sample_count <= 0:
         raise ValueError("sample_count must be positive")
     if request.step_count <= 0:
         raise ValueError("step_count must be positive")
 
-    source_sha256 = request.source_sha256
     source_lock = _safe_json_load(root / "artifacts" / "source_lock.json")
-    if source_sha256 is None and source_lock is not None and model is not None:
-        sources = source_lock.get("sources")
-        source = sources.get(model.source) if isinstance(sources, dict) else None
-        if isinstance(source, dict) and isinstance(source.get("commit"), str):
-            source_sha256 = source["commit"]
-    if source_sha256 is None:
-        raise ValueError("source SHA is required (provide it or a valid source lock)")
+    sources = source_lock.get("sources") if source_lock is not None else None
+    source = sources.get(model.source) if isinstance(sources, dict) else None
+    source_sha256 = source.get("commit") if isinstance(source, dict) else None
+    if not isinstance(source_sha256, str) or not source_sha256:
+        raise ValueError(f"canonical source lock lacks SHA for {model.source}")
+    if request.source_sha256 is not None and request.source_sha256 != source_sha256:
+        raise ValueError("source SHA assertion differs from canonical source lock")
 
-    config_sha256 = request.config_sha256
-    if config_sha256 is None:
-        if not registry_path.is_file():
-            raise ValueError("config SHA is required when configs/experiments.yaml is absent")
-        config_sha256 = sha256_file(registry_path)
+    config_sha256 = sha256_file(registry_path)
+    if request.config_sha256 is not None and request.config_sha256 != config_sha256:
+        raise ValueError("config SHA assertion differs from canonical registry")
 
     checkpoint_sha256, checkpoint_lock_id = _resolve_checkpoint_identity(
-        root, request, support.train_recipe if model is not None else None
+        root, request, support.train_recipe
     )
-    resolved_adapter = adapter or load_adapter(model.adapter if model is not None else request.model_id)
+    if request.checkpoint_sha256 is not None and request.checkpoint_sha256 != checkpoint_sha256:
+        raise ValueError("checkpoint SHA assertion differs from canonical checkpoint identity")
+    if request.checkpoint_lock_id is not None and request.checkpoint_lock_id != checkpoint_lock_id:
+        raise ValueError("checkpoint lock assertion differs from canonical checkpoint identity")
+    resolved_adapter = adapter or load_adapter(model.adapter)
     resolved = RunRequest(
         **{
             **asdict(request),
             "config_sha256": config_sha256,
             "source_sha256": source_sha256,
             "adapter_identity": _adapter_identity(resolved_adapter, request),
-            "environment": request.environment or (model.environment if model is not None else None),
+            "environment": model.environment,
             "checkpoint_sha256": checkpoint_sha256,
             "checkpoint_lock_id": checkpoint_lock_id,
         }
@@ -362,6 +377,7 @@ def run_experiment(
         except SampleValidationError:
             pass
         else:
+            remove_safe_file(run_dir / "failure.json")
             return RunResult("skipped", run_dir, 0)
     if metadata_path.exists():
         if metadata_path.is_symlink() or not metadata_path.is_file():
@@ -418,7 +434,25 @@ def run_experiment(
             "finished_at": _utc_now(),
         },
     )
+    remove_safe_file(run_dir / "failure.json")
     return RunResult("succeeded", run_dir, 0)
+
+
+def _validate_registry_request(root: Path, model_id: str, dataset_id: str, step_count: int) -> str:
+    registry_path = root / "configs" / "experiments.yaml"
+    if not registry_path.is_file():
+        raise ValueError("canonical registry is missing: configs/experiments.yaml")
+    registry = load_registry(registry_path)
+    try:
+        model = registry.models[model_id]
+        support = model.datasets[dataset_id]
+    except KeyError as error:
+        raise ValueError(f"unknown model/dataset cell: {model_id}/{dataset_id}") from error
+    if support.status != "supported":
+        raise ValueError(f"unsupported model/dataset cell: {model_id}/{dataset_id}")
+    if step_count not in registry.step_grids[model.category]:
+        raise ValueError(f"invalid step count {step_count} for {model.category} category")
+    return model.environment
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -430,7 +464,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--num-samples", type=int, default=1024)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--device")
+    parser.add_argument("--validate-only", action="store_true")
     arguments = parser.parse_args(argv)
+    if arguments.validate_only:
+        try:
+            print(_validate_registry_request(arguments.root, arguments.model, arguments.dataset, arguments.steps))
+        except ValueError as error:
+            parser.error(str(error))
+        return 0
     request = RunRequest(
         run_id=f"{arguments.model}-{arguments.dataset}-steps-{arguments.steps}",
         model_id=arguments.model,
@@ -445,6 +486,16 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError) as error:
         parser.error(str(error))
     print(json.dumps({"status": result.status, "run_dir": str(result.run_dir)}))
+    if result.returncode < 0:
+        signum = -result.returncode
+        if os.name == "posix":
+            import signal
+
+            sys.stdout.flush()
+            sys.stderr.flush()
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+        return 128 + signum
     return result.returncode
 
 
