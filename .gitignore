@@ -7,8 +7,10 @@ __pycache__/
 upstreams/
 data/raw/
 data/processed/
+data/training_cache/
 checkpoints/
 results/
+work/
 *.tar
 *.tar.gz
 *.tgz

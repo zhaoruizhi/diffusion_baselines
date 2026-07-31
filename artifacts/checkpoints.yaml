@@ -214,6 +214,8 @@ recipes:
       bash scripts/train/candi.sh --source upstreams/candi --dataset owt
       --output checkpoints/reference_reproduction/candi/owt
     output: checkpoints/reference_reproduction/candi/owt
+    sampling_checkpoint: model.ckpt
+    sampling_config: config.yaml
     note: Explicit prerequisite for the project-owned Task 12 wrapper; the upstream site-specific Slurm job is not invoked directly.
   duo_dcd_lm1b:
     model: duo_dcd
@@ -229,6 +231,8 @@ recipes:
       --rounds 8 --steps-per-round 10000 --global-batch-size 128
       --learning-rate 6e-5
     output: checkpoints/reference_reproduction/duo_dcd/lm1b
+    sampling_checkpoint: model.ckpt
+    sampling_config: config.yaml
     prerequisites: [flm_lm1b_reproductions]
     note: Explicit prerequisite for the project-owned Task 12 wrapper; do not substitute the OWT distilled snapshot or alter the reference schedule.
   duo_di4c_lm1b:
