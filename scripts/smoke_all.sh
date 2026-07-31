@@ -7,6 +7,10 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 DLB_ROOT="${DLB_ROOT:-$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 PYTHON_BIN="${DLB_PYTHON:-python}"
 MATRIX="${DLB_ROOT}/results/matrix/smoke.tsv"
+if [[ "${1:-}" == "--help" ]]; then
+  printf 'Usage: %s\n' "$0"
+  exit 0
+fi
 mkdir -p "$DLB_ROOT/results/matrix" "$DLB_ROOT/results/logs"
 PYTHONPATH="$DLB_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -m dlb.matrix \
   --root "$DLB_ROOT" --output "$MATRIX" --sample-count 1 --seed 42 || exit $?
