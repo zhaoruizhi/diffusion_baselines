@@ -3,7 +3,7 @@
 set -u
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-DLB_ROOT="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
+DLB_ROOT="${DLB_ROOT:-$(CDPATH= cd -- "$script_dir/.." && pwd -P)}"
 
 model=""
 dataset=""

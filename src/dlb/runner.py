@@ -64,6 +64,7 @@ class RunRequest:
     adapter_identity: str | None = None
     environment: str | None = None
     device: str | None = None
+    results_root: str | None = None
 
 
 @dataclass(frozen=True)
@@ -389,6 +390,7 @@ def _identity(request: RunRequest, command: list[str]) -> dict[str, object]:
         "checkpoint_lock_id": request.checkpoint_lock_id,
         "checkpoint_selection": request.checkpoint_selection,
         "checkpoint_teacher_family": request.checkpoint_teacher_family,
+        "results_root": request.results_root,
         "command_sha256": _canonical_sha256(command),
     }
 
@@ -431,7 +433,20 @@ def run_experiment(
 
     root = (root or Path.cwd()).resolve()
     request, adapter = _resolve_request(request, root, adapter)
-    run_dir = root / "results" / "samples" / request.dataset_id / request.model_id / f"steps_{request.step_count}"
+    results_root = (
+        Path(request.results_root).absolute()
+        if request.results_root is not None
+        else root / "results"
+    )
+    if results_root.is_symlink() or not results_root.is_absolute():
+        raise ValueError("results_root must be an absolute, non-symlink path")
+    run_dir = (
+        results_root
+        / "samples"
+        / request.dataset_id
+        / request.model_id
+        / f"steps_{request.step_count}"
+    )
     ensure_safe_directory(run_dir)
     command = list(request.command) if request.command is not None else list(adapter.build_command(request, run_dir))
     if not command or any(not isinstance(argument, str) or not argument for argument in command):
@@ -535,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--num-samples", type=int, default=1024)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--device")
+    parser.add_argument("--results-root", type=Path)
     parser.add_argument("--validate-only", action="store_true")
     arguments = parser.parse_args(argv)
     if arguments.validate_only:
@@ -551,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
         seed=arguments.seed,
         sample_count=arguments.num_samples,
         device=arguments.device,
+        results_root=str(arguments.results_root.resolve()) if arguments.results_root else None,
     )
     try:
         result = run_experiment(request, arguments.root)

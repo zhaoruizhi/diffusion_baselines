@@ -3,7 +3,7 @@
 set -u
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-DLB_ROOT="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
+DLB_ROOT="${DLB_ROOT:-$(CDPATH= cd -- "$script_dir/.." && pwd -P)}"
 
 model=""
 dataset=""
@@ -11,14 +11,15 @@ steps=""
 num_samples=""
 seed=""
 device=""
+results_root=""
 
 usage() {
-  echo "usage: $0 --model MODEL --dataset {lm1b,owt} --steps N --num-samples N --seed N [--device DEVICE]" >&2
+  echo "usage: $0 --model MODEL --dataset {lm1b,owt} --steps N --num-samples N --seed N [--device DEVICE] [--results-root PATH]" >&2
 }
 
 while (( $# )); do
   case "$1" in
-    --model|--dataset|--steps|--num-samples|--seed|--device)
+    --model|--dataset|--steps|--num-samples|--seed|--device|--results-root)
       if (( $# < 2 )); then usage; exit 2; fi
       case "$1" in
         --model) model="$2" ;;
@@ -27,6 +28,7 @@ while (( $# )); do
         --num-samples) num_samples="$2" ;;
         --seed) seed="$2" ;;
         --device) device="$2" ;;
+        --results-root) results_root="$2" ;;
       esac
       shift 2 ;;
     --help) usage; exit 0 ;;
@@ -56,4 +58,5 @@ fi
 
 runner_args=(--root "$DLB_ROOT" --model "$model" --dataset "$dataset" --steps "$steps" --num-samples "$num_samples" --seed "$seed")
 if [[ -n "$device" ]]; then runner_args+=(--device "$device"); fi
+if [[ -n "$results_root" ]]; then runner_args+=(--results-root "$results_root"); fi
 exec "${DLB_CONDA:-conda}" run -n "$environment" python -m dlb.runner "${runner_args[@]}"
