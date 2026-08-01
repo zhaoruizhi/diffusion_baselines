@@ -20,33 +20,35 @@
 ```bash
 git clone <你的 GitHub 仓库地址> diffusion_baseline
 cd diffusion_baseline
+conda create -n dlb-bootstrap python=3.11 -y
+conda activate dlb-bootstrap
 export DLB_ROOT="$PWD"
-export DLB_PYTHON="${DLB_PYTHON:-python}"
+export DLB_PYTHON="$CONDA_PREFIX/bin/python"
 ```
 
 先准备一个能导入 `PyYAML`、`pydantic` 的 bootstrap Python；它只用于解析 manifest 和启动下载脚本：
 
 ```bash
-python -m pip install -e ".[dev,data,checkpoints]"
+"$DLB_PYTHON" -m pip install -e ".[dev,data,checkpoints]"
 ```
 
 然后严格按以下顺序执行：
 
 ```bash
 bash scripts/fetch_sources.sh
-python scripts/verify_sources.py --root "$DLB_ROOT"
-python scripts/fetch_data.py --root "$DLB_ROOT"
-python scripts/preprocess_data.py --root "$DLB_ROOT" --dataset all
-python scripts/verify_data.py --root "$DLB_ROOT" --dataset all
-python scripts/fetch_checkpoints.py --root "$DLB_ROOT" --all-public
-python scripts/verify_checkpoints.py --root "$DLB_ROOT"
+"$DLB_PYTHON" scripts/verify_sources.py --root "$DLB_ROOT"
+"$DLB_PYTHON" scripts/fetch_data.py --root "$DLB_ROOT"
+"$DLB_PYTHON" scripts/preprocess_data.py --root "$DLB_ROOT" --dataset all
+"$DLB_PYTHON" scripts/verify_data.py --root "$DLB_ROOT" --dataset all
+"$DLB_PYTHON" scripts/fetch_checkpoints.py --root "$DLB_ROOT" --all-public
+"$DLB_PYTHON" scripts/verify_checkpoints.py --root "$DLB_ROOT"
 bash envs/create_all.sh
 bash envs/verify_all.sh
 bash scripts/smoke_all.sh
 bash scripts/run_all.sh
 bash scripts/evaluate_all.sh
 bash scripts/benchmark_all.sh
-python scripts/aggregate_results.py --root "$DLB_ROOT"
+"$DLB_PYTHON" scripts/aggregate_results.py --root "$DLB_ROOT"
 ```
 
 `smoke_all.sh` 使用独立的 `results/smoke/`，不会被正式汇总接受。若只需先验证一个方法，可运行：
@@ -59,7 +61,7 @@ bash scripts/run_one.sh --model flm --dataset lm1b --steps 1 \
 严格汇总失败时，不要删除失败目录；先查看 `results/summary/failures.csv`，修复后重跑对应阶段。需要先查看当前可用结果时：
 
 ```bash
-python scripts/aggregate_results.py --root "$DLB_ROOT" --partial
+"$DLB_PYTHON" scripts/aggregate_results.py --root "$DLB_ROOT" --partial
 ```
 
 `--partial` 只用于诊断，不是论文主结果。

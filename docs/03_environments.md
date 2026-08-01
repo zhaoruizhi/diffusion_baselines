@@ -16,6 +16,19 @@
 
 YAML 文件在 `envs/`。版本差异和上游要求以 YAML 与 `patches/` 为准，不要把当前机器已有的任意环境当作实验环境。
 
+## Bootstrap 环境
+
+源码、数据和 checkpoint 下载脚本先使用一个轻量 bootstrap Conda 环境：
+
+```bash
+conda create -n dlb-bootstrap python=3.11 -y
+conda activate dlb-bootstrap
+export DLB_PYTHON="$CONDA_PREFIX/bin/python"
+"$DLB_PYTHON" -m pip install -e ".[dev,data,checkpoints]"
+```
+
+这个环境只用于运行仓库自己的 Python 脚本，不用于训练或评测。
+
 ## 创建和验证
 
 ```bash

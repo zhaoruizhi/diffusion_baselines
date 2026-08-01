@@ -3,14 +3,38 @@ set -euo pipefail
 
 DLB_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export DLB_ROOT
-DLB_PYTHON=${PYTHON_BIN:-"$DLB_ROOT/.venv/bin/python"}
 
-if [[ ! -x "$DLB_PYTHON" ]]; then
-    echo "ERROR Python interpreter not found: $DLB_PYTHON" >&2
+resolve_python_candidate() {
+    local candidate="$1"
+    if [[ "$candidate" == */* ]]; then
+        [[ -x "$candidate" ]] && printf '%s\n' "$candidate"
+    elif command -v "$candidate" >/dev/null 2>&1; then
+        command -v "$candidate"
+    fi
+}
+
+if [[ -n "${DLB_PYTHON:-}" ]]; then
+    if ! DLB_PYTHON_BIN=$(resolve_python_candidate "$DLB_PYTHON"); then
+        echo "ERROR Python interpreter not found or not executable: $DLB_PYTHON" >&2
+        exit 1
+    fi
+elif [[ -n "${PYTHON_BIN:-}" ]]; then
+    if ! DLB_PYTHON_BIN=$(resolve_python_candidate "$PYTHON_BIN"); then
+        echo "ERROR Python interpreter not found or not executable: $PYTHON_BIN" >&2
+        exit 1
+    fi
+elif [[ -n "${CONDA_PREFIX:-}" && -x "$CONDA_PREFIX/bin/python" ]]; then
+    DLB_PYTHON_BIN="$CONDA_PREFIX/bin/python"
+elif command -v python >/dev/null 2>&1; then
+    DLB_PYTHON_BIN=$(command -v python)
+elif command -v python3 >/dev/null 2>&1; then
+    DLB_PYTHON_BIN=$(command -v python3)
+else
+    echo "ERROR Python interpreter not found; activate conda or set DLB_PYTHON." >&2
     exit 1
 fi
 
-source_rows=$(PYTHONPATH="$DLB_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$DLB_PYTHON" - "$DLB_ROOT" <<'PY'
+source_rows=$(PYTHONPATH="$DLB_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" "$DLB_PYTHON_BIN" - "$DLB_ROOT" <<'PY'
 from pathlib import Path
 import sys
 
@@ -57,4 +81,4 @@ while IFS=$'\t' read -r name url commit; do
 done <<< "$source_rows"
 
 PYTHONPATH="$DLB_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
-    "$DLB_PYTHON" "$DLB_ROOT/scripts/verify_sources.py" --root "$DLB_ROOT"
+    "$DLB_PYTHON_BIN" "$DLB_ROOT/scripts/verify_sources.py" --root "$DLB_ROOT"

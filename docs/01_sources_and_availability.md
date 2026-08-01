@@ -6,11 +6,13 @@
 
 ```bash
 export DLB_ROOT="$PWD"
+conda activate dlb-bootstrap
+export DLB_PYTHON="$CONDA_PREFIX/bin/python"
 bash scripts/fetch_sources.sh
-python scripts/verify_sources.py --root "$DLB_ROOT"
+"$DLB_PYTHON" scripts/verify_sources.py --root "$DLB_ROOT"
 ```
 
-脚本会拒绝 origin 不一致、脏工作树和未处于锁定 commit 的 checkout。`upstreams/` 是只读依赖；必要兼容修复只能放入 `patches/<source>/`，不能直接改上游目录。
+`fetch_sources.sh` 优先使用 `DLB_PYTHON`，否则使用 `PYTHON_BIN`、当前 Conda 环境的 `python`、PATH 中的 `python` 或 `python3`。脚本会拒绝 origin 不一致、脏工作树和未处于锁定 commit 的 checkout。`upstreams/` 是只读依赖；必要兼容修复只能放入 `patches/<source>/`，不能直接改上游目录。
 
 ## 公开可用性
 
