@@ -45,6 +45,14 @@ def pip_dependencies(environment):
     )
 
 
+def conda_dependencies(environment):
+    return [
+        dependency
+        for dependency in environment["dependencies"]
+        if isinstance(dependency, str)
+    ]
+
+
 def pinned_pip_dependencies(environment):
     return {
         package.split("==", 1)[0]: package.split("==", 1)[1]
@@ -100,6 +108,16 @@ def test_conda_pytorch_environments_do_not_override_its_torch_stack_with_pip():
         assert "torchvision=0.20.1" in load_environments()[name]["dependencies"]
 
 
+def test_conda_pytorch_environments_pin_mkl_before_ijit_regression():
+    for name, environment in load_environments().items():
+        dependencies = conda_dependencies(environment)
+        if any(dependency.startswith("pytorch=") for dependency in dependencies):
+            assert "mkl<2024.1" in dependencies, name
+        assert not any(
+            dependency.startswith("intel-openmp=2024.0") for dependency in dependencies
+        )
+
+
 def test_upstream_entrypoint_dependencies_are_explicit():
     environments = load_environments()
 
@@ -122,6 +140,13 @@ def test_known_pinned_dependency_pairs_use_compatible_versions():
         packages = pinned_pip_dependencies(environments[environment])
         assert packages[left] == left_version
         assert packages[right] in compatible_versions
+
+
+def test_mdlm_defers_source_only_cuda_extensions_until_torch_is_available():
+    dependencies = pip_dependencies(load_environments()["mdlm"])
+
+    assert not any(package.startswith("causal-conv1d==") for package in dependencies)
+    assert not any(package.startswith("mamba-ssm==") for package in dependencies)
 
 
 @pytest.fixture
@@ -238,6 +263,55 @@ def test_create_all_creates_absent_environment_then_installs_flash_attention(
         "flash-attn==2.8.3",
         "--no-build-isolation",
     ] in calls
+
+
+def test_create_all_checks_torch_import_before_flash_attention(fake_conda, tmp_path):
+    completed, calls = run_script("create_all.sh", fake_conda, tmp_path, ["dlb-duo"])
+
+    assert completed.returncode == 0, completed.stderr
+    torch_import_call = next(
+        call for call in calls
+        if call[:5] == ["run", "-n", "dlb-duo", "python", "-c"]
+        and "import torch" in call[5]
+    )
+    flash_install_call = [
+        "run",
+        "-n",
+        "dlb-duo",
+        "python",
+        "-m",
+        "pip",
+        "install",
+        "flash-attn==2.7.4.post1",
+        "--no-build-isolation",
+    ]
+    assert calls.index(torch_import_call) < calls.index(flash_install_call)
+
+
+def test_create_all_installs_mdlm_cuda_extensions_from_git_after_torch(
+    fake_conda, tmp_path
+):
+    completed, calls = run_script("create_all.sh", fake_conda, tmp_path, ["dlb-mdlm"])
+
+    assert completed.returncode == 0, completed.stderr
+    torch_import_call = next(
+        call for call in calls
+        if call[:5] == ["run", "-n", "dlb-mdlm", "python", "-c"]
+        and "import torch" in call[5]
+    )
+    extension_install_call = [
+        "run",
+        "-n",
+        "dlb-mdlm",
+        "python",
+        "-m",
+        "pip",
+        "install",
+        "--no-build-isolation",
+        "git+https://github.com/Dao-AILab/causal-conv1d.git@v1.1.3.post1",
+        "git+https://github.com/state-spaces/mamba.git@v1.1.4",
+    ]
+    assert calls.index(torch_import_call) < calls.index(extension_install_call)
 
 
 def test_create_all_updates_existing_environment_without_pruning(fake_conda, tmp_path):

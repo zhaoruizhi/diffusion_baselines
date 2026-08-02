@@ -6,6 +6,7 @@ dependencies:
   - python=3.9
   - pip=24.2
   - pytorch=2.3.1
+  - mkl<2024.1
   - pytorch-cuda=12.1
   - pip:
       - accelerate==1.2.1

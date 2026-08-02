@@ -757,7 +757,6 @@ def test_gdrive_backend_addresses_each_expected_file_by_immutable_id(tmp_path):
         [
             "gdown",
             "--continue",
-            "--id",
             "fileA",
             "--output",
             str(staging / ".objects" / "fileA.partial"),
@@ -765,7 +764,6 @@ def test_gdrive_backend_addresses_each_expected_file_by_immutable_id(tmp_path):
         [
             "gdown",
             "--continue",
-            "--id",
             "fileB",
             "--output",
             str(staging / ".objects" / "fileB.partial"),
@@ -805,7 +803,8 @@ def test_gdrive_fetch_replaces_same_name_staging_from_pinned_file_ids(tmp_path, 
     def fake_run(command, check):
         assert check is True
         calls.append(command)
-        file_id = command[command.index("--id") + 1]
+        assert "--id" not in command
+        file_id = command[2]
         output = Path(command[command.index("--output") + 1])
         assert output.parent.is_dir()
         output.write_bytes({"fileA": b"weights", "fileB": b"config"}[file_id])
@@ -818,7 +817,7 @@ def test_gdrive_fetch_replaces_same_name_staging_from_pinned_file_ids(tmp_path, 
     destination = tmp_path / "checkpoints" / "official" / "rdlm" / "LM1B"
     assert (destination / "checkpoint.pth").read_bytes() == b"weights"
     assert (destination / "config.yaml").read_bytes() == b"config"
-    assert [command[command.index("--id") + 1] for command in calls] == ["fileA", "fileB"]
+    assert [command[2] for command in calls] == ["fileA", "fileB"]
     assert record["status"] == "downloaded"
 
 
@@ -850,7 +849,8 @@ def test_gdrive_fetch_enforces_per_file_manifest_digests(tmp_path, monkeypatch):
     )
 
     def fake_run(command, check):
-        file_id = command[command.index("--id") + 1]
+        assert "--id" not in command
+        file_id = command[2]
         output = Path(command[command.index("--output") + 1])
         output.write_bytes({"fileA": b"weights", "fileB": b"config"}[file_id])
         return types.SimpleNamespace(returncode=0)
@@ -909,7 +909,8 @@ def test_gdrive_stale_partial_is_quarantined_and_rerun_succeeds(
     assert quarantined[0].read_bytes() == b"stale"
 
     def successful_run(command, check):
-        file_id = command[command.index("--id") + 1]
+        assert "--id" not in command
+        file_id = command[2]
         output = Path(command[command.index("--output") + 1])
         output.write_bytes({"fileA": b"weights", "fileB": b"config"}[file_id])
         return types.SimpleNamespace(returncode=0)
@@ -957,7 +958,8 @@ def test_gdrive_quarantines_a_symlinked_object_partial_before_successful_rerun(
     object_path.symlink_to(outside)
 
     def successful_run(command, check):
-        file_id = command[command.index("--id") + 1]
+        assert "--id" not in command
+        file_id = command[2]
         output = Path(command[command.index("--output") + 1])
         output.write_bytes({"fileA": b"weights", "fileB": b"config"}[file_id])
         return types.SimpleNamespace(returncode=0)

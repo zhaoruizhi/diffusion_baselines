@@ -78,6 +78,39 @@ flash_attention_version() {
   esac
 }
 
+post_torch_pip_requirements() {
+  case "$1" in
+    dlb-mdlm)
+      printf '%s\n' \
+        'git+https://github.com/Dao-AILab/causal-conv1d.git@v1.1.3.post1' \
+        'git+https://github.com/state-spaces/mamba.git@v1.1.4'
+      ;;
+  esac
+}
+
+check_pytorch_import() {
+  local environment="$1"
+  "${CONDA_BIN}" run -n "${environment}" python -c \
+    'import torch; print(torch.__version__, torch.version.cuda)'
+}
+
+install_post_torch_pip_requirements() {
+  local environment="$1"
+  local requirement
+  local requirements=()
+
+  while IFS= read -r requirement; do
+    [[ -n "${requirement}" ]] && requirements+=("${requirement}")
+  done < <(post_torch_pip_requirements "${environment}")
+
+  if ((${#requirements[@]} == 0)); then
+    return 0
+  fi
+
+  "${CONDA_BIN}" run -n "${environment}" python -m pip install \
+    --no-build-isolation "${requirements[@]}"
+}
+
 failures=()
 for environment in "${ENVIRONMENTS[@]}"; do
   if ! yaml_path="$(environment_file "${environment}")"; then
@@ -101,6 +134,18 @@ for environment in "${ENVIRONMENTS[@]}"; do
 
   if ! "${CONDA_BIN}" "${action[@]}"; then
     echo "FAILED ${environment}: conda environment ${action[1]} failed." >&2
+    failures+=("${environment}")
+    continue
+  fi
+
+  if ! check_pytorch_import "${environment}"; then
+    echo "FAILED ${environment}: PyTorch import failed before post-install steps." >&2
+    failures+=("${environment}")
+    continue
+  fi
+
+  if ! install_post_torch_pip_requirements "${environment}"; then
+    echo "FAILED ${environment}: post-torch pip requirements installation failed." >&2
     failures+=("${environment}")
     continue
   fi

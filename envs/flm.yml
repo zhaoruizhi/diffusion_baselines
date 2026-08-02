@@ -6,6 +6,7 @@ dependencies:
   - python=3.11
   - pip=24.2
   - pytorch=2.5.1
+  - mkl<2024.1
   - pytorch-cuda=12.4
   - torchvision=0.20.1
   - cuda-toolkit=12.4

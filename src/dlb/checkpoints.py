@@ -441,7 +441,6 @@ def build_gdrive_commands(source: GDriveSource, staging: Path) -> list[list[str]
         [
             "gdown",
             "--continue",
-            "--id",
             file_id,
             "--output",
             str(object_root / f"{file_id}.partial"),
