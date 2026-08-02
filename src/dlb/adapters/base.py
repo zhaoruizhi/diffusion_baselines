@@ -498,18 +498,26 @@ class BaseTeacherAdapter:
                 qualifier = "a positive integer" if positive else "an integer"
                 raise AdapterError(f"{name} must be {qualifier}")
         run_dir = run_dir.resolve()
-        suffix = (
-            Path("results")
-            / "samples"
+        sample_suffix = (
+            Path("samples")
             / request.dataset_id
             / request.model_id
             / f"steps_{request.step_count}"
         )
-        if len(run_dir.parents) < 5:
-            raise AdapterError(f"run directory is not rooted at a request root: {run_dir}")
-        root = run_dir.parents[4]
-        if root / suffix != run_dir:
-            raise AdapterError(f"run directory does not match the request: {run_dir}")
+        if request.results_root is not None:
+            results_root = Path(request.results_root).resolve()
+            if results_root.is_symlink():
+                raise AdapterError(f"results root is unsafe: {results_root}")
+            root = self._project_root_for_results_root(results_root)
+            if results_root / sample_suffix != run_dir:
+                raise AdapterError(f"run directory does not match the request: {run_dir}")
+        else:
+            suffix = Path("results") / sample_suffix
+            if len(run_dir.parents) < 5:
+                raise AdapterError(f"run directory is not rooted at a request root: {run_dir}")
+            root = run_dir.parents[4]
+            if root / suffix != run_dir:
+                raise AdapterError(f"run directory does not match the request: {run_dir}")
         dataset = self._load_data_contract(root, request.dataset_id)
         length = dataset.get("sequence_length")
         if type(length) is not int or length <= 0:
@@ -520,6 +528,17 @@ class BaseTeacherAdapter:
                 f"missing eval batch size for {request.model_id}/{request.dataset_id}"
             )
         return root, length, batch_size
+
+    def _project_root_for_results_root(self, results_root: Path) -> Path:
+        for candidate in results_root.parents:
+            if (
+                (candidate / "configs" / "experiments.yaml").is_file()
+                and (candidate / "artifacts" / "data.yaml").is_file()
+            ):
+                return candidate.resolve()
+        raise AdapterError(
+            f"results root is not under a canonical project root: {results_root}"
+        )
 
     def _resolve_checkpoint(
         self, root: Path, request: RunRequest, *, dry_run: bool

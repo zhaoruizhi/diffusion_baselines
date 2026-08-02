@@ -240,6 +240,27 @@ def test_candi_command_uses_the_pinned_hybrid_sampler() -> None:
     assert override(command, "sampling.steps") == "16"
 
 
+def test_commands_accept_smoke_results_root_under_project_results(tmp_path: Path) -> None:
+    """Catch adapters rejecting runner requests with --results-root results/smoke."""
+
+    root = prepare_conversion_root(tmp_path)
+    (root / "upstreams" / "candi").mkdir(parents=True)
+    (root / "upstreams" / "candi" / "main.py").write_text("# fixture\n", encoding="utf-8")
+    results_root = root / "results" / "smoke"
+    item = replace(request("candi", "lm1b", steps=1, samples=1), results_root=str(results_root))
+    output_dir = (
+        results_root
+        / "samples"
+        / item.dataset_id
+        / item.model_id
+        / f"steps_{item.step_count}"
+    )
+
+    command = CANDIAdapter().render_command(item, output_dir, dry_run=True)
+
+    assert Path(override(command, "--capture-path")).parent == output_dir
+
+
 @pytest.mark.parametrize(
     ("adapter", "model", "dataset", "batch_size"),
     [
