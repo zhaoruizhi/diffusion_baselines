@@ -245,11 +245,21 @@ def _offline_huggingface():
 
 def _load_entrypoint(path: Path) -> ModuleType:
     sys.path.insert(0, str(path.parent))
-    specification = importlib.util.spec_from_file_location("dlb_pinned_upstream_main", path)
+    module_name = "dlb_pinned_upstream_main"
+    specification = importlib.util.spec_from_file_location(module_name, path)
     if specification is None or specification.loader is None:
         raise ValueError(f"cannot load upstream entrypoint: {path}")
     module = importlib.util.module_from_spec(specification)
-    specification.loader.exec_module(module)
+    previous = sys.modules.get(module_name)
+    sys.modules[module_name] = module
+    try:
+        specification.loader.exec_module(module)
+    except BaseException:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+        raise
     return module
 
 
