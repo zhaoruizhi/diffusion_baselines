@@ -257,7 +257,6 @@ def test_create_all_updates_existing_environment_without_pruning(fake_conda, tmp
         "update",
         "--file",
         update_call[3],
-        "--prune=false",
     ]
 
 

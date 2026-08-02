@@ -87,7 +87,7 @@ for environment in "${ENVIRONMENTS[@]}"; do
   fi
 
   if environment_exists "${environment}"; then
-    action=(env update --file "${yaml_path}" --prune=false)
+    action=(env update --file "${yaml_path}")
   else
     discovery_status=$?
     if ((discovery_status == 1)); then

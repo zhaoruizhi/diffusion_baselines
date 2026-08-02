@@ -377,7 +377,7 @@ Preserve upstream versions where valid. Fix incompatibilities explicitly: FLM us
 
 - [ ] **Step 4: Implement non-destructive create/verify/pack scripts**
 
-`create_all.sh` uses `conda env create` only when absent and `conda env update --prune=false` when present. `verify_all.sh` runs imports and prints JSON version records. `pack_all.sh` writes `artifacts/conda-packs/<name>.tar.gz` via `conda-pack` without deleting environments.
+`create_all.sh` uses `conda env create` only when absent and `conda env update --file <env.yml>` when present. `verify_all.sh` runs imports and prints JSON version records. `pack_all.sh` writes `artifacts/conda-packs/<name>.tar.gz` via `conda-pack` without deleting environments.
 
 - [ ] **Step 5: Validate without creating environments**
 
