@@ -298,10 +298,27 @@ def _write_capture(
 def _run_main(module: ModuleType, entrypoint: Path, forwarded: list[str]) -> None:
     previous_argv = sys.argv
     try:
-        sys.argv = [str(entrypoint), *forwarded]
+        sys.argv = [
+            str(entrypoint),
+            *_forwarded_with_hydra_config_path(entrypoint, forwarded),
+        ]
         module.main()
     finally:
         sys.argv = previous_argv
+
+
+def _forwarded_with_hydra_config_path(entrypoint: Path, forwarded: list[str]) -> list[str]:
+    if any(
+        argument in {"--config-path", "-cp"}
+        or argument.startswith("--config-path=")
+        or argument.startswith("-cp=")
+        for argument in forwarded
+    ):
+        return forwarded
+    config_dir = entrypoint.parent / "configs"
+    if config_dir.is_dir() and not config_dir.is_symlink():
+        return [f"--config-path={config_dir.resolve()}", *forwarded]
+    return forwarded
 
 
 def _capture_teacher(

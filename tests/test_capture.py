@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+from types import ModuleType
 
 import dlb.adapters.capture as capture_module
 
@@ -28,3 +29,27 @@ def main():
         sys.modules.pop("dlb_pinned_upstream_main", None)
 
     assert Path(module.MODULE_FILE_AT_IMPORT) == entrypoint
+
+
+def test_run_main_points_hydra_at_sibling_config_directory(tmp_path: Path) -> None:
+    """Catch dynamic imports making Hydra treat sibling configs as a missing package."""
+
+    entrypoint = tmp_path / "main.py"
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    entrypoint.write_text("# fixture\n", encoding="utf-8")
+    observed: dict[str, list[str]] = {}
+    module = ModuleType("fixture_upstream")
+
+    def main() -> None:
+        observed["argv"] = list(sys.argv)
+
+    module.main = main
+
+    capture_module._run_main(module, entrypoint, ["mode=sample_eval"])
+
+    assert observed["argv"] == [
+        str(entrypoint),
+        f"--config-path={config_dir.resolve()}",
+        "mode=sample_eval",
+    ]
