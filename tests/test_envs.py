@@ -127,6 +127,13 @@ def test_upstream_entrypoint_dependencies_are_explicit():
     assert "rich==14.2.0" in pip_dependencies(environments["candi"])
 
 
+def test_sdtt_family_includes_pkg_resources_provider_for_legacy_imports():
+    environments = load_environments()
+
+    for name in {"sdtt", "di4c"}:
+        assert "setuptools==80.9.0" in pip_dependencies(environments[name])
+
+
 def test_known_pinned_dependency_pairs_use_compatible_versions():
     environments = load_environments()
     compatibility_matrix = {
