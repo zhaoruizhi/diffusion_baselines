@@ -20,6 +20,8 @@ dependencies:
       - lightning==2.5.5
       - numpy==1.24.3
       - omegaconf==2.3.0
+      - pydantic==2.12.4
+      - pyyaml==6.0.2
       - rich==14.2.0
       - scipy==1.11.4
       - tokenizers==0.22.1

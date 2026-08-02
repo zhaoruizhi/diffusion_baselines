@@ -127,6 +127,13 @@ def test_upstream_entrypoint_dependencies_are_explicit():
     assert "rich==14.2.0" in pip_dependencies(environments["candi"])
 
 
+def test_project_runtime_dependencies_are_available_in_every_environment():
+    for name, environment in load_environments().items():
+        packages = pinned_pip_dependencies(environment)
+        assert packages["pydantic"] == "2.12.4", name
+        assert packages["pyyaml"] == "6.0.2", name
+
+
 def test_sdtt_family_includes_pkg_resources_provider_for_legacy_imports():
     environments = load_environments()
 
@@ -600,6 +607,7 @@ def test_verify_all_escapes_unknown_environment_names(fake_conda, tmp_path):
 
 
 def test_verify_all_checks_the_complete_method_import_mapping(fake_conda, tmp_path):
+    project_runtime_imports = {"pydantic", "yaml"}
     expected_imports = {
         "dlb-flm": {
             "datasets", "einops", "entmax", "flash_attn", "fsspec", "huggingface_hub",
@@ -637,6 +645,10 @@ def test_verify_all_checks_the_complete_method_import_mapping(fake_conda, tmp_pa
             "timm", "tokenizers", "torchdata", "tqdm", "transformers", "wandb",
         },
         "dlb-eval": {"accelerate", "datasets", "evaluate", "fsspec", "mauve", "sacrebleu", "scipy", "tokenizers", "transformers"},
+    }
+    expected_imports = {
+        environment: modules | project_runtime_imports
+        for environment, modules in expected_imports.items()
     }
     completed, calls = run_script(
         "verify_all.sh", fake_conda, tmp_path, list(expected_imports)

@@ -20,6 +20,8 @@ dependencies:
       - nvitop==1.3.2
       - omegaconf==2.3.0
       - pandas==2.2.1
+      - pydantic==2.12.4
+      - pyyaml==6.0.2
       - rich==13.7.1
       - scikit-learn==1.4.0
       - timm==0.9.16

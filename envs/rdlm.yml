@@ -17,6 +17,7 @@ dependencies:
       - hydra-joblib-launcher==1.2.0
       - numpy==1.26.4
       - omegaconf==2.3.0
+      - pydantic==2.12.4
       - pyyaml==6.0.2
       - scipy==1.13.1
       - tokenizers==0.21.0

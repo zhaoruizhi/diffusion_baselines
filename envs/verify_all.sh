@@ -25,14 +25,14 @@ fi
 
 method_imports() {
   case "$1" in
-    dlb-flm) printf '%s\n' 'datasets einops entmax flash_attn fsspec huggingface_hub hydra lightning numpy omegaconf requests rich scipy timm tokenizers torchmetrics tqdm transformers triton wandb' ;;
-    dlb-langflow) printf '%s\n' 'einops huggingface_hub safetensors transformers' ;;
-    dlb-duo) printf '%s\n' 'datasets einops flash_attn fsspec h5py huggingface_hub hydra lightning numpy omegaconf requests rich scipy timm tokenizers torchmetrics torchvision tqdm transformers triton wandb' ;;
-    dlb-mdlm) printf '%s\n' 'causal_conv1d datasets einops flash_attn fsspec huggingface_hub hydra lightning mamba_ssm numpy omegaconf requests rich timm tokenizers torchmetrics transformers wandb' ;;
-    dlb-candi) printf '%s\n' 'datasets einops evaluate flash_attn fsspec huggingface_hub hydra lightning numpy omegaconf requests rich scipy tokenizers torchmetrics tqdm transformers' ;;
-    dlb-rdlm) printf '%s\n' 'accelerate datasets einops fsspec huggingface_hub hydra numpy omegaconf requests scipy tokenizers tqdm transformers wandb' ;;
-    dlb-sdtt|dlb-di4c) printf '%s\n' 'datasets einops flash_attn fsspec huggingface_hub hydra lightning loguru mauve numpy omegaconf pandas requests safetensors tensorboard timm tokenizers torchdata tqdm transformers wandb' ;;
-    dlb-eval) printf '%s\n' 'accelerate datasets evaluate fsspec mauve sacrebleu scipy tokenizers transformers' ;;
+    dlb-flm) printf '%s\n' 'datasets einops entmax flash_attn fsspec huggingface_hub hydra lightning numpy omegaconf pydantic requests rich scipy timm tokenizers torchmetrics tqdm transformers triton wandb yaml' ;;
+    dlb-langflow) printf '%s\n' 'einops huggingface_hub pydantic safetensors transformers yaml' ;;
+    dlb-duo) printf '%s\n' 'datasets einops flash_attn fsspec h5py huggingface_hub hydra lightning numpy omegaconf pydantic requests rich scipy timm tokenizers torchmetrics torchvision tqdm transformers triton wandb yaml' ;;
+    dlb-mdlm) printf '%s\n' 'causal_conv1d datasets einops flash_attn fsspec huggingface_hub hydra lightning mamba_ssm numpy omegaconf pydantic requests rich timm tokenizers torchmetrics transformers wandb yaml' ;;
+    dlb-candi) printf '%s\n' 'datasets einops evaluate flash_attn fsspec huggingface_hub hydra lightning numpy omegaconf pydantic requests rich scipy tokenizers torchmetrics tqdm transformers yaml' ;;
+    dlb-rdlm) printf '%s\n' 'accelerate datasets einops fsspec huggingface_hub hydra numpy omegaconf pydantic requests scipy tokenizers tqdm transformers wandb yaml' ;;
+    dlb-sdtt|dlb-di4c) printf '%s\n' 'datasets einops flash_attn fsspec huggingface_hub hydra lightning loguru mauve numpy omegaconf pandas pydantic requests safetensors tensorboard timm tokenizers torchdata tqdm transformers wandb yaml' ;;
+    dlb-eval) printf '%s\n' 'accelerate datasets evaluate fsspec mauve pydantic sacrebleu scipy tokenizers transformers yaml' ;;
     *) return 1 ;;
   esac
 }
