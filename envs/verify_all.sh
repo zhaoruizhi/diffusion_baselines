@@ -38,11 +38,11 @@ method_imports() {
 }
 
 emit_failure() {
-  python3 - "$1" "$2" <<'PY'
+  python3 - "$1" "$2" "${3:-}" <<'PY'
 import json
 import sys
 
-print(json.dumps({
+record = {
     "environment": sys.argv[1],
     "python": None,
     "torch": None,
@@ -50,8 +50,32 @@ print(json.dumps({
     "cuda_available": False,
     "imports": {},
     "error": sys.argv[2],
-}, sort_keys=True, allow_nan=False))
+}
+if len(sys.argv) > 3 and sys.argv[3]:
+    record["diagnostic"] = sys.argv[3][-8000:]
+print(json.dumps(record, sort_keys=True, allow_nan=False))
 PY
+}
+
+probe_diagnostic() {
+  local reason="$1"
+  local raw_output="$2"
+  local stderr_path="$3"
+  local stderr_output=""
+
+  [[ "${DLB_VERIFY_DEBUG:-}" == "1" ]] || return 0
+
+  if [[ -s "${stderr_path}" ]]; then
+    stderr_output="$(<"${stderr_path}")"
+  fi
+
+  printf '%s\n' "${reason}"
+  if [[ -n "${stderr_output}" ]]; then
+    printf 'stderr:\n%s\n' "${stderr_output}"
+  fi
+  if [[ -n "${raw_output}" ]]; then
+    printf 'stdout:\n%s\n' "${raw_output}"
+  fi
 }
 
 validate_probe() {
@@ -187,10 +211,17 @@ print(marker + json.dumps(record, sort_keys=True, allow_nan=False))
 raise SystemExit(0)
 PY
 )" || manager_status=$?
-  rm -f -- "${probe_stderr}"
+  diagnostic=""
+  if ((manager_status != 0)); then
+    diagnostic="$(
+      probe_diagnostic "conda run exited with status ${manager_status}" \
+        "${probe_output}" "${probe_stderr}"
+    )"
+  fi
 
   if ((manager_status != 0)); then
-    emit_failure "${environment}" "verification probe failed"
+    emit_failure "${environment}" "verification probe failed" "${diagnostic}"
+    rm -f -- "${probe_stderr}"
     failures+=("${environment}")
     continue
   fi
@@ -203,9 +234,14 @@ PY
       failures+=("${environment}")
     fi
   else
-    emit_failure "${environment}" "verification probe failed"
+    diagnostic="$(
+      probe_diagnostic "probe output was not valid DLB_ENV_PROBE_V1 JSON" \
+        "${probe_output}" "${probe_stderr}"
+    )"
+    emit_failure "${environment}" "verification probe failed" "${diagnostic}"
     failures+=("${environment}")
   fi
+  rm -f -- "${probe_stderr}"
 done
 
 if ((${#failures[@]})); then

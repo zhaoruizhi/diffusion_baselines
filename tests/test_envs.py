@@ -191,6 +191,9 @@ if arguments == ["info", "--json"]:
 
 failure = os.environ.get("FAKE_FAIL_SUBSTRING", "")
 if failure and any(failure in argument for argument in arguments):
+    failure_stderr = os.environ.get("FAKE_FAIL_STDERR")
+    if failure_stderr:
+        print(failure_stderr, file=sys.stderr)
     raise SystemExit(23)
 
 if arguments[:1] == ["run"]:
@@ -423,6 +426,24 @@ def test_verify_all_emits_json_for_each_environment_and_fails_in_aggregate(
         "imports": {},
         "error": "verification probe failed",
     }
+
+
+def test_verify_all_debug_mode_reports_probe_manager_stderr(fake_conda, tmp_path):
+    completed, _ = run_script(
+        "verify_all.sh",
+        fake_conda,
+        tmp_path,
+        ["dlb-duo"],
+        DLB_VERIFY_DEBUG="1",
+        FAKE_FAIL_SUBSTRING="dlb-duo",
+        FAKE_FAIL_STDERR="simulated native loader failure",
+    )
+
+    records = [json.loads(line) for line in completed.stdout.splitlines()]
+    assert completed.returncode != 0
+    assert records[0]["error"] == "verification probe failed"
+    assert "conda run exited with status 23" in records[0]["diagnostic"]
+    assert "simulated native loader failure" in records[0]["diagnostic"]
 
 
 @pytest.mark.parametrize(
