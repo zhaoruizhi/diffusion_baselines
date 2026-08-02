@@ -168,10 +168,14 @@ for environment in "${ENVIRONMENTS[@]}"; do
     failures+=("${environment}")
     continue
   fi
+  if ! probe_script="$(mktemp "${TMPDIR:-/tmp}/dlb-env-probe.XXXXXX")"; then
+    emit_failure "${environment}" "verification probe failed"
+    rm -f -- "${probe_stderr}"
+    failures+=("${environment}")
+    continue
+  fi
 
-  probe_output=""
-  manager_status=0
-  probe_output="$("${CONDA_BIN}" run -n "${environment}" python - "${environment}" ${imports} <<'PY' 2>"${probe_stderr}"
+  if ! cat >"${probe_script}" <<'PY'
 import importlib
 import json
 import platform
@@ -210,7 +214,17 @@ for module in modules:
 print(marker + json.dumps(record, sort_keys=True, allow_nan=False))
 raise SystemExit(0)
 PY
-)" || manager_status=$?
+  then
+    emit_failure "${environment}" "verification probe failed"
+    rm -f -- "${probe_stderr}" "${probe_script}"
+    failures+=("${environment}")
+    continue
+  fi
+
+  probe_output=""
+  manager_status=0
+  probe_output="$("${CONDA_BIN}" run -n "${environment}" python \
+    "${probe_script}" "${environment}" ${imports} 2>"${probe_stderr}")" || manager_status=$?
   diagnostic=""
   if ((manager_status != 0)); then
     diagnostic="$(
@@ -221,7 +235,7 @@ PY
 
   if ((manager_status != 0)); then
     emit_failure "${environment}" "verification probe failed" "${diagnostic}"
-    rm -f -- "${probe_stderr}"
+    rm -f -- "${probe_stderr}" "${probe_script}"
     failures+=("${environment}")
     continue
   fi
@@ -241,7 +255,7 @@ PY
     emit_failure "${environment}" "verification probe failed" "${diagnostic}"
     failures+=("${environment}")
   fi
-  rm -f -- "${probe_stderr}"
+  rm -f -- "${probe_stderr}" "${probe_script}"
 done
 
 if ((${#failures[@]})); then

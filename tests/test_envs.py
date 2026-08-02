@@ -197,7 +197,18 @@ if failure and any(failure in argument for argument in arguments):
     raise SystemExit(23)
 
 if arguments[:1] == ["run"]:
-    probe_source = sys.stdin.read()
+    if arguments[3:5] == ["python", "-c"]:
+        print("2.5.1 12.4")
+        raise SystemExit(0)
+    if arguments[3:6] == ["python", "-m", "pip"]:
+        raise SystemExit(0)
+    if os.environ.get("FAKE_DROP_RUN_STDIN") and arguments[4] == "-":
+        sys.stdin.read()
+        raise SystemExit(0)
+    if arguments[4] == "-":
+        probe_source = sys.stdin.read()
+    else:
+        probe_source = Path(arguments[4]).read_text()
     output = os.environ.get("FAKE_PROBE_OUTPUT")
     if output is not None:
         print(output)
@@ -446,6 +457,21 @@ def test_verify_all_debug_mode_reports_probe_manager_stderr(fake_conda, tmp_path
     assert "simulated native loader failure" in records[0]["diagnostic"]
 
 
+def test_verify_all_does_not_depend_on_manager_forwarding_stdin(fake_conda, tmp_path):
+    completed, calls = run_script(
+        "verify_all.sh",
+        fake_conda,
+        tmp_path,
+        ["dlb-duo"],
+        FAKE_DROP_RUN_STDIN="1",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    run_call = next(call for call in calls if call[:3] == ["run", "-n", "dlb-duo"])
+    assert run_call[3] == "python"
+    assert run_call[4] != "-"
+
+
 @pytest.mark.parametrize(
     "probe_output",
     [
@@ -615,7 +641,8 @@ def test_verify_all_checks_the_complete_method_import_mapping(fake_conda, tmp_pa
         if call[:1] != ["run"]:
             continue
         assert call[:2] == ["run", "-n"]
-        assert call[3:5] == ["python", "-"]
+        assert call[3] == "python"
+        assert call[4] != "-"
         manager_environment = call[2]
         probe_environment = call[5]
         assert manager_environment == probe_environment
