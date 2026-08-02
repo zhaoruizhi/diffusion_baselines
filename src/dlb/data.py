@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -403,7 +403,7 @@ def build_data_manifest(
         },
         "processed_path": _relative_to_root(published_output_dir or output_dir, root),
         "files": inventory_files(output_dir),
-        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "verified": False,
     }
     manifest["source_materialization_revision"] = processing_contract[
@@ -521,7 +521,7 @@ def verify_processed_dataset(
     result = dict(manifest)
     result["verified"] = True
     result["verification"] = {
-        "verified_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "verified_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "checked_sequences": checked_sequences,
         "decoded_samples": decoded_samples,
         "decoded_indices": decoded_indices,

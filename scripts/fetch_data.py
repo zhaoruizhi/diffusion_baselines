@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import shutil
@@ -184,7 +184,7 @@ def main() -> int:
 
     manifest = {
         "schema_version": 1,
-        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "hf_home": hf_home.relative_to(root).as_posix(),
         "owt_disk_preflight": owt_disk_preflight,
         "datasets": dataset_records,

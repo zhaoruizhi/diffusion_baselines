@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 import hashlib
 import json
@@ -488,7 +488,7 @@ def publish_partial(
                 "quarantined": None,
             }
         quarantine_root = quarantine_root or target.parents[1] / "quarantine"
-        timestamp = timestamp or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = timestamp or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         quarantine = _quarantine_path(target, quarantine_root, timestamp)
         os.replace(target, quarantine)
         quarantined = quarantine.as_posix()
@@ -524,7 +524,7 @@ def download_direct(
             effective_quarantine_root = (
                 quarantine_root or target.parents[1] / "quarantine"
             )
-            stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
             quarantine = _quarantine_path(
                 target, effective_quarantine_root, stamp
             )
@@ -815,7 +815,7 @@ def _quarantine_unexpected_gdrive_staging(
         allowed_directories.update(
             parent.as_posix() for parent in relative.parents if parent.as_posix() != "."
         )
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     quarantined = []
     for name in allowed_object_files:
         relative = PurePosixPath(name)
@@ -869,7 +869,7 @@ def _publish_directory(partial: Path, destination: Path, quarantine_root: Path) 
         safe_remote_path(item.relative_to(partial).as_posix())
     quarantined = None
     if destination.exists():
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         quarantine = _quarantine_path(destination, quarantine_root, stamp)
         os.replace(destination, quarantine)
         quarantined = quarantine.as_posix()
@@ -1005,7 +1005,7 @@ def fetch_all_resources(root: Path, manifest_path: Path, manifest: CheckpointMan
             }
     lock = {
         "schema_version": 1,
-        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "manifest_sha256": sha256_file(manifest_path),
         "resources": records,
     }

@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import hashlib
 import inspect
 import json
@@ -1381,7 +1381,7 @@ def execute_launch(launch: LaunchSpec, *, root: Path) -> str:
         {
             **identity,
             "teacher_adaptation": adaptation,
-            "prepared_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            "prepared_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         },
     )
     config_path = launch.output / "config.yaml"
@@ -1419,7 +1419,7 @@ def execute_launch(launch: LaunchSpec, *, root: Path) -> str:
         "checkpoint_sha256": sha256_file(canonical),
         "config": "config.yaml",
         "config_sha256": sha256_file(config_path),
-        "completed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
     atomic_json_write(complete_marker, marker)
     return "completed"
