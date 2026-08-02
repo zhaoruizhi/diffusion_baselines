@@ -59,4 +59,6 @@ fi
 runner_args=(--root "$DLB_ROOT" --model "$model" --dataset "$dataset" --steps "$steps" --num-samples "$num_samples" --seed "$seed")
 if [[ -n "$device" ]]; then runner_args+=(--device "$device"); fi
 if [[ -n "$results_root" ]]; then runner_args+=(--results-root "$results_root"); fi
-exec "${DLB_CONDA:-conda}" run -n "$environment" python -m dlb.runner "${runner_args[@]}"
+exec "${DLB_CONDA:-conda}" run -n "$environment" env \
+  PYTHONPATH="$DLB_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" \
+  python -m dlb.runner "${runner_args[@]}"
