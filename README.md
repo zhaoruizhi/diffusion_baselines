@@ -51,6 +51,21 @@ bash scripts/benchmark_all.sh
 "$DLB_PYTHON" scripts/aggregate_results.py --root "$DLB_ROOT"
 ```
 
+单机 4 卡服务器可使用本仓库的本地并行入口，默认绑定 GPU `0,1,2,3`：
+
+```bash
+export DLB_GPUS=0,1,2,3
+export DLB_MAX_JOBS=4
+bash scripts/smoke_4gpu.sh
+bash scripts/run_4gpu.sh
+bash scripts/evaluate_4gpu.sh
+bash scripts/benchmark_4gpu.sh
+"$DLB_PYTHON" scripts/aggregate_results.py --root "$DLB_ROOT"
+```
+
+这条路径仍要求先补齐 `reference_reproduction` checkpoint。更多说明见
+[4-GPU 本地并行运行](docs/09_four_gpu_local.md)。
+
 `smoke_all.sh` 使用独立的 `results/smoke/`，不会被正式汇总接受。若只需先验证一个方法，可运行：
 
 ```bash
@@ -76,6 +91,7 @@ bash scripts/run_one.sh --model flm --dataset lm1b --steps 1 \
 - [生成、评测与 timing](docs/06_generation_and_evaluation.md)
 - [Slurm](docs/07_slurm.md)
 - [故障排查](docs/08_troubleshooting.md)
+- [4-GPU 本地并行运行](docs/09_four_gpu_local.md)
 - [实验矩阵](docs/EXPERIMENT_MATRIX.md)
 
 所有可复现输入均在 `artifacts/` 和 `configs/` 中锁定。不要把 `data/`、`checkpoints/`、`upstreams/`、`results/` 或 Conda archive 提交到 Git。
