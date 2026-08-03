@@ -921,7 +921,7 @@ def fetch_resource(root: Path, resource: CheckpointResource) -> dict[str, object
         object_root.mkdir(parents=True, exist_ok=True)
         commands = build_gdrive_commands(source, partial)
         for (relative_name, file_id), command in zip(
-            source.expected_files.items(), commands, strict=True
+            source.expected_files.items(), commands
         ):
             object_path = safe_checkpoint_destination(
                 checkpoint_root,

@@ -367,7 +367,7 @@ def _write_capture(
     if expected is not None and len(texts) != expected:
         raise ValueError(f"expected {expected} captured samples, found {len(texts)}")
     samples: list[dict[str, object]] = []
-    for index, (text, tokens) in enumerate(zip(texts, token_rows, strict=True)):
+    for index, (text, tokens) in enumerate(zip(texts, token_rows)):
         if not isinstance(text, str):
             raise ValueError(f"captured text {index} is not a string")
         if not isinstance(tokens, list):
@@ -474,7 +474,7 @@ def _capture_teacher(
         text_rows = list(self.tokenizer.batch_decode(result))
         if len(token_rows) != len(text_rows):
             raise ValueError("upstream token and text batch sizes differ")
-        for tokens, text in zip(token_rows, text_rows, strict=True):
+        for tokens, text in zip(token_rows, text_rows):
             captured.append(
                 {"sample_id": len(captured), "text": text, "token_ids": tokens}
             )

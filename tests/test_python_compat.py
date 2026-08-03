@@ -66,3 +66,20 @@ def test_runtime_type_aliases_avoid_pep604_expressions_for_python39() -> None:
                     )
 
     assert violations == []
+
+
+def test_runtime_zip_calls_avoid_strict_keyword_for_python39() -> None:
+    """Catch zip(strict=...) calls in code executed by Python 3.9 environments."""
+
+    violations: list[str] = []
+    for path in python_runtime_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Name) or node.func.id != "zip":
+                continue
+            if any(keyword.arg == "strict" for keyword in node.keywords):
+                violations.append(f"{path.relative_to(ROOT)} calls zip(strict=...)")
+
+    assert violations == []

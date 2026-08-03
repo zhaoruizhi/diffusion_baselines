@@ -744,7 +744,7 @@ class BaseTeacherAdapter:
                 f"expected {expected} generated samples, found {min(len(texts), len(token_ids))}"
             )
         self._validate_texts(texts)
-        for index, (_, tokens) in enumerate(zip(texts, token_ids, strict=True)):
+        for index, (_, tokens) in enumerate(zip(texts, token_ids)):
             if not isinstance(tokens, list) or not tokens:
                 raise AdapterError(f"empty token_ids at sample {index}")
             if len(tokens) != sequence_length:
