@@ -970,8 +970,7 @@ def adapt_teacher_checkpoint(
     destination = launch.adapted_teacher
     ensure_safe_directory(destination.parent)
     _require_regular_or_missing(destination, "adapted teacher checkpoint")
-    adapted_payload = dict(payload) if "state_dict" in payload else {}
-    adapted_payload["state_dict"] = adapted
+    adapted_payload = {"state_dict": adapted}
     temporary = destination.with_name(f".{destination.name}.{os.getpid()}.partial")
     _require_regular_or_missing(temporary, "temporary adapted checkpoint")
     try:

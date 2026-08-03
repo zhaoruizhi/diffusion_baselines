@@ -13,6 +13,7 @@ from dlb.recipes import (
     BACKBONE_TENSOR_KEYS,
     RecipeError,
     build_launch,
+    expected_backbone_keys,
     load_recipe,
     masked_to_absorbing,
     uniform_to_absorbing,
@@ -281,6 +282,53 @@ def test_teacher_adapters_allow_rotary_buffer_from_pinned_checkpoints() -> None:
     )
 
     assert adapted["rotary_emb.inv_freq"] == [1, 2]
+
+
+def test_adapted_teacher_checkpoint_drops_lightning_metadata_for_weights_only_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipe = load_recipe("mdlm_di4c", "lm1b")
+    launch = build_launch(
+        recipe,
+        root=tmp_path,
+        source=tmp_path / recipe.source_path,
+        output=tmp_path / "checkpoints" / "reference_reproduction" / "mdlm_di4c",
+        teacher=tmp_path / "teacher.ckpt",
+        devices=1,
+        nodes=1,
+        per_device_batch_size=1,
+        seed=42,
+        resume=True,
+    )
+    launch.teacher.write_bytes(b"source checkpoint")
+    state = tensor_state()
+    for key in expected_backbone_keys() - set(state):
+        state[key] = [0]
+    source_payload = {
+        "state_dict": state,
+        "hyper_parameters": {"config": object()},
+        "callbacks": {"custom": object()},
+    }
+    saved_payloads: list[dict[str, object]] = []
+
+    class FakeTorch:
+        @staticmethod
+        def load(path, **kwargs):
+            return source_payload
+
+        @staticmethod
+        def save(payload, path):
+            saved_payloads.append(payload)
+            Path(path).write_bytes(b"adapted checkpoint")
+
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch)
+    monkeypatch.setitem(recipes_module.BASE_VOCAB_SIZES, "lm1b", 3)
+
+    recipes_module.adapt_teacher_checkpoint(launch, source_mask_index=1)
+
+    assert len(saved_payloads) == 1
+    assert set(saved_payloads[0]) == {"state_dict"}
+    assert "hyper_parameters" not in saved_payloads[0]
 
 
 @pytest.mark.parametrize(
