@@ -428,3 +428,89 @@ def test_fake_launch_publishes_before_run_and_resumes_exact_completion(
     completed = json.loads((launch.output / "completed.json").read_text())
     assert completed["checkpoint"] == "model.ckpt"
     assert (launch.output / "model.ckpt").read_bytes() == b"fake checkpoint"
+
+
+def test_source_verification_ignores_python_bytecode_cache_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipe = load_recipe("mdlm_di4c", "lm1b")
+    source = tmp_path / "upstreams" / "di4c"
+    entrypoint = source / recipe.entrypoint
+    entrypoint.parent.mkdir(parents=True)
+    entrypoint.write_text("print('placeholder')\n", encoding="utf-8")
+    launch = build_launch(
+        recipe,
+        root=tmp_path,
+        source=source,
+        output=tmp_path / "checkpoints" / "reference_reproduction" / "mdlm_di4c",
+        teacher=tmp_path / "teacher.ckpt",
+        devices=1,
+        nodes=1,
+        per_device_batch_size=1,
+        seed=42,
+        resume=True,
+    )
+
+    def fake_run(command, **kwargs):
+        if command[3] == "rev-parse":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=recipe.source_commit + "\n",
+                stderr="",
+            )
+        if command[3] == "status":
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="?? sdtt/src/sdtt/__pycache__/\n?? sdtt/src/sdtt/core/__pycache__/\n",
+                stderr="",
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(recipes_module.subprocess, "run", fake_run)
+
+    recipes_module._verify_source(launch)
+
+
+def test_training_launch_disables_python_bytecode_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipe = load_recipe("flm", "lm1b")
+    launch = build_launch(
+        recipe,
+        root=tmp_path,
+        source=tmp_path / "upstreams" / "flm",
+        output=tmp_path / "checkpoints" / "self_trained" / "lm1b" / "flm",
+        teacher=None,
+        devices=8,
+        nodes=1,
+        per_device_batch_size=64,
+        seed=42,
+        resume=True,
+    )
+    monkeypatch.setattr(recipes_module, "_verify_source", lambda item: None)
+    monkeypatch.setattr(
+        recipes_module,
+        "_prepare_training_cache",
+        lambda item, root: {
+            "mode": "fake",
+            "processed_manifest_sha256": "a" * 64,
+        },
+    )
+
+    def fake_compose(item, environment):
+        assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+        return "mode: train\n"
+
+    def fake_run(command, **kwargs):
+        assert kwargs["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
+        checkpoint = launch.output / "checkpoints" / "last.ckpt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_bytes(b"fake checkpoint")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(recipes_module, "_compose_config", fake_compose)
+    monkeypatch.setattr(recipes_module.subprocess, "run", fake_run)
+
+    assert recipes_module.execute_launch(launch, root=tmp_path) == "completed"

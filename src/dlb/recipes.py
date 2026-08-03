@@ -14,7 +14,7 @@ import hashlib
 import inspect
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import subprocess
@@ -1072,8 +1072,27 @@ def _verify_source(launch: LaunchSpec) -> None:
         capture_output=True,
         check=False,
     )
-    if dirty.returncode or dirty.stdout.strip():
+    dirty_lines = _source_dirty_lines(dirty.stdout)
+    if dirty.returncode or dirty_lines:
         raise RecipeError(f"{launch.recipe.source} source checkout is dirty")
+
+
+def _source_dirty_lines(status_output: str) -> list[str]:
+    """Return source status lines excluding Python bytecode cache byproducts."""
+
+    return [
+        line
+        for line in status_output.splitlines()
+        if line.strip() and not _is_untracked_python_bytecode_cache(line)
+    ]
+
+
+def _is_untracked_python_bytecode_cache(status_line: str) -> bool:
+    if not status_line.startswith("?? "):
+        return False
+    path = status_line[3:].strip()
+    parts = PurePosixPath(path).parts
+    return "__pycache__" in parts or path.endswith((".pyc", ".pyo"))
 
 
 def _processed_dataset(root: Path, dataset: str) -> tuple[Path, Path]:
@@ -1354,6 +1373,7 @@ def execute_launch(launch: LaunchSpec, *, root: Path) -> str:
             "HF_HUB_OFFLINE": "1",
             "TRANSFORMERS_OFFLINE": "1",
             "WANDB_MODE": "disabled",
+            "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONUNBUFFERED": "1",
         }
     )
