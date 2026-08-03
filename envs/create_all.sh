@@ -70,7 +70,7 @@ sys.exit(1)
 
 flash_attention_version() {
   case "$1" in
-    dlb-flm) printf '%s\n' '2.8.3' ;;
+    dlb-flm) printf '%s\n' '2.7.4.post1' ;;
     dlb-duo|dlb-sdtt|dlb-di4c) printf '%s\n' '2.7.4.post1' ;;
     dlb-mdlm) printf '%s\n' '2.5.6' ;;
     dlb-candi) printf '%s\n' '2.6.1' ;;

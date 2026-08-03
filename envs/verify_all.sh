@@ -115,7 +115,13 @@ except (json.JSONDecodeError, ValueError):
 if not isinstance(record, dict) or record.get("environment") != environment:
     raise SystemExit(2)
 required = {"environment", "python", "torch", "torch_cuda", "cuda_available", "imports"}
-optional = {"torch_error", "cuda_error", "import_errors"}
+optional = {
+    "torch_error",
+    "cuda_error",
+    "import_errors",
+    "runtime_checks",
+    "runtime_errors",
+}
 if not required <= record.keys() or not set(record) <= required | optional:
     raise SystemExit(2)
 if type(record["python"]) is not str:
@@ -149,8 +155,33 @@ if "import_errors" in record:
         raise SystemExit(2)
 elif not all(record["imports"].values()):
     raise SystemExit(2)
+if "runtime_checks" in record:
+    checks = record["runtime_checks"]
+    if (
+        type(checks) is not dict
+        or not all(type(key) is str and type(value) is bool for key, value in checks.items())
+    ):
+        raise SystemExit(2)
+    failed_checks = {name for name, passed in checks.items() if not passed}
+    if "runtime_errors" in record:
+        errors = record["runtime_errors"]
+        if (
+            type(errors) is not dict
+            or set(errors) != failed_checks
+            or not all(type(value) is str for value in errors.values())
+        ):
+            raise SystemExit(2)
+    elif failed_checks:
+        raise SystemExit(2)
+elif "runtime_errors" in record:
+    raise SystemExit(2)
 print(json.dumps(record, sort_keys=True, allow_nan=False))
-healthy = record["cuda_available"] and all(record["imports"].values()) and record["torch"] is not None
+healthy = (
+    record["cuda_available"]
+    and all(record["imports"].values())
+    and all(record.get("runtime_checks", {}).values())
+    and record["torch"] is not None
+)
 raise SystemExit(0 if healthy else 1)
 PY
 }
@@ -192,9 +223,11 @@ record = {
     "cuda_available": False,
     "imports": {},
 }
+torch_module = None
 try:
     import torch
 
+    torch_module = torch
     record["torch"] = torch.__version__
     record["torch_cuda"] = torch.version.cuda
     record["cuda_available"] = torch.cuda.is_available()
@@ -210,6 +243,37 @@ for module in modules:
     except Exception as error:
         record["imports"][module] = False
         record.setdefault("import_errors", {})[module] = str(error)
+
+def version_tuple(value):
+    parts = []
+    for raw in value.replace("-", ".").split("."):
+        if not raw.isdigit():
+            break
+        parts.append(int(raw))
+    return tuple(parts)
+
+runtime_checks = {}
+runtime_errors = {}
+if record["imports"].get("flash_attn") and torch_module is not None:
+    try:
+        import importlib.metadata
+
+        flash_version = importlib.metadata.version("flash-attn")
+    except Exception:
+        flash_version = ""
+    if flash_version and version_tuple(flash_version) >= (2, 8, 0):
+        check_name = "flash_attn_torch_wrap_triton"
+        passed = hasattr(torch_module.library, "wrap_triton")
+        runtime_checks[check_name] = passed
+        if not passed:
+            runtime_errors[check_name] = (
+                f"flash-attn {flash_version} requires torch.library.wrap_triton "
+                f"but torch {record['torch']} does not provide it"
+            )
+if runtime_checks:
+    record["runtime_checks"] = runtime_checks
+if runtime_errors:
+    record["runtime_errors"] = runtime_errors
 
 print(marker + json.dumps(record, sort_keys=True, allow_nan=False))
 raise SystemExit(0)

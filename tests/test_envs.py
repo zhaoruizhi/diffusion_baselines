@@ -288,7 +288,7 @@ def test_create_all_creates_absent_environment_then_installs_flash_attention(
         "-m",
         "pip",
         "install",
-        "flash-attn==2.8.3",
+        "flash-attn==2.7.4.post1",
         "--no-build-isolation",
     ] in calls
 
@@ -593,6 +593,63 @@ def test_verify_all_rejects_echo_manager_output(fake_conda, tmp_path):
     records = [json.loads(line) for line in completed.stdout.splitlines()]
     assert completed.returncode != 0
     assert records[0]["error"] == "verification probe failed"
+
+
+def test_verify_all_rejects_flash_attention_without_required_torch_triton_api(
+    fake_conda, tmp_path
+):
+    payload = {
+        "environment": "dlb-flm",
+        "python": "3.11",
+        "torch": "2.5.1",
+        "torch_cuda": "12.4",
+        "cuda_available": True,
+        "imports": {
+            module: True
+            for module in [
+                "datasets",
+                "einops",
+                "entmax",
+                "flash_attn",
+                "fsspec",
+                "huggingface_hub",
+                "hydra",
+                "lightning",
+                "numpy",
+                "omegaconf",
+                "pydantic",
+                "requests",
+                "rich",
+                "scipy",
+                "timm",
+                "tokenizers",
+                "torchmetrics",
+                "tqdm",
+                "transformers",
+                "triton",
+                "wandb",
+                "yaml",
+            ]
+        },
+        "runtime_checks": {"flash_attn_torch_wrap_triton": False},
+        "runtime_errors": {
+            "flash_attn_torch_wrap_triton": (
+                "flash-attn 2.8.3 requires torch.library.wrap_triton"
+            )
+        },
+    }
+    completed, _ = run_script(
+        "verify_all.sh",
+        fake_conda,
+        tmp_path,
+        ["dlb-flm"],
+        FAKE_PROBE_OUTPUT="DLB_ENV_PROBE_V1:" + json.dumps(payload, sort_keys=True),
+    )
+
+    records = [json.loads(line) for line in completed.stdout.splitlines()]
+    assert completed.returncode != 0
+    assert records[0]["runtime_checks"]["flash_attn_torch_wrap_triton"] is False
+    assert "wrap_triton" in records[0]["runtime_errors"]["flash_attn_torch_wrap_triton"]
 
 
 def test_verify_all_escapes_unknown_environment_names(fake_conda, tmp_path):
