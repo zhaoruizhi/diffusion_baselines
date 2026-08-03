@@ -41,6 +41,7 @@ BACKBONE_TENSOR_KEYS = (
     "output_layer.linear.weight",
     "output_layer.linear.bias",
 )
+OPTIONAL_BACKBONE_STATE_KEYS = frozenset({"rotary_emb.inv_freq"})
 
 SOURCE_COMMITS = {
     "flm": "a1918d5164e5038e37d0b7a4fb2010ce75b863b3",
@@ -779,12 +780,15 @@ def _append_or_move_row(
 def _validate_state(
     state: Mapping[str, object], expected_keys: Collection[str] | None
 ) -> tuple[int, int]:
-    if expected_keys is not None and set(state) != set(expected_keys):
-        missing = sorted(set(expected_keys) - set(state))
-        unexpected = sorted(set(state) - set(expected_keys))
-        raise RecipeError(
-            f"teacher state keys differ: missing={missing}, unexpected={unexpected}"
-        )
+    if expected_keys is not None:
+        expected = set(expected_keys)
+        observed = set(state)
+        missing = sorted(expected - observed)
+        unexpected = sorted(observed - expected - OPTIONAL_BACKBONE_STATE_KEYS)
+        if missing or unexpected:
+            raise RecipeError(
+                f"teacher state keys differ: missing={missing}, unexpected={unexpected}"
+            )
     missing_tensors = sorted(set(BACKBONE_TENSOR_KEYS) - set(state))
     if missing_tensors:
         raise RecipeError(f"teacher state keys are missing {missing_tensors}")

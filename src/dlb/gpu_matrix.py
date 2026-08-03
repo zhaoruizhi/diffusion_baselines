@@ -52,7 +52,7 @@ def parse_gpus(value: str) -> tuple[str, ...]:
 def active_gpus(gpus: Sequence[str], max_jobs: int) -> tuple[str, ...]:
     if max_jobs <= 0:
         raise ValueError("max jobs must be positive")
-    return tuple(gpus[: min(max_jobs, len(gpus))])
+    return tuple(gpus[index % len(gpus)] for index in range(max_jobs))
 
 
 def _script(root: Path, name: str) -> str:

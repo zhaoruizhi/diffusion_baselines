@@ -269,6 +269,20 @@ def test_masked_teacher_does_not_duplicate_an_already_final_mask() -> None:
     assert adapted is not state
 
 
+def test_teacher_adapters_allow_rotary_buffer_from_pinned_checkpoints() -> None:
+    state = tensor_state()
+    state["rotary_emb.inv_freq"] = [1, 2]
+
+    adapted = masked_to_absorbing(
+        state,
+        source_mask_index=1,
+        target_vocab_size=4,
+        expected_keys=set(BACKBONE_TENSOR_KEYS),
+    )
+
+    assert adapted["rotary_emb.inv_freq"] == [1, 2]
+
+
 @pytest.mark.parametrize(
     "mutation,match",
     [
