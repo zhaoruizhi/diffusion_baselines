@@ -401,6 +401,49 @@ def test_rdlm_retokenizes_variable_upstream_rows_offline_and_records_why(
     assert metadata["token_ids_transformation"]["reason"] == "upstream_ids_not_canonical_length"
 
 
+def test_rdlm_retokenizes_out_of_vocab_upstream_rows_offline_and_records_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch RDLM base-vocabulary IDs being validated as canonical BERT IDs."""
+
+    class FakeTokenizer:
+        eos_token = "[SEP]"
+        pad_token = "[PAD]"
+        pad_token_id = 0
+
+        def __call__(self, texts, **settings):
+            assert settings["max_length"] == 128
+            return {"input_ids": [[101, 102] + [0] * 126 for _ in texts]}
+
+    class FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(name, **settings):
+            assert name == "bert-base-uncased"
+            assert settings == {
+                "revision": "86b5e0934494bd15c9632b12f734a8a67f723594",
+                "local_files_only": True,
+            }
+            return FakeTokenizer()
+
+    monkeypatch.setitem(
+        sys.modules, "transformers", SimpleNamespace(AutoTokenizer=FakeAutoTokenizer)
+    )
+    root = prepare_conversion_root(tmp_path)
+    item = canonical_conversion_request(root, request("rdlm", "lm1b", samples=1))
+    output_dir = run_dir(root, item)
+    write_capture(output_dir / "upstream_token_ids.json", 1, 128)
+    capture = json.loads((output_dir / "upstream_token_ids.json").read_text())
+    capture["samples"][0]["token_ids"] = [35008] + [1] * 127
+    (output_dir / "upstream_token_ids.json").write_text(json.dumps(capture))
+
+    records = list(RDLMAdapter().convert_outputs(item, output_dir))
+    metadata = json.loads((output_dir / "conversion_metadata.json").read_text())
+
+    assert records[0].token_ids == [101, 102] + [0] * 126
+    assert metadata["token_ids_source"] == "retokenized"
+    assert metadata["token_ids_transformation"]["reason"] == "upstream_ids_outside_canonical_vocab"
+
+
 def test_shared_capture_runs_langflow_with_locked_offline_tokenizer_and_records_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

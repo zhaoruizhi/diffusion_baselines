@@ -302,30 +302,33 @@ class BaseTeacherAdapter:
         upstream_token_ids = [item["token_ids"] for item in capture]
         token_ids = upstream_token_ids
         token_ids_source = "upstream"
+        dataset = self._load_data_contract(root, request.dataset_id)
+        tokenizer_name = dataset["tokenizer"]
+        vocab_size = self._TOKENIZER_VOCAB_SIZES[tokenizer_name]
         token_ids_transformation: dict[str, object] = {
             "max_length": sequence_length,
             "operation": "validated_exact_length",
         }
-        if retokenize_inexact_rows and any(
-            not isinstance(tokens, list) or len(tokens) != sequence_length
-            for tokens in upstream_token_ids
-        ):
+        retokenize_reason = (
+            self._retokenize_reason(upstream_token_ids, sequence_length, vocab_size)
+            if retokenize_inexact_rows
+            else None
+        )
+        if retokenize_reason is not None:
             token_ids, token_ids_transformation = self._retokenize(
                 root, request.dataset_id, texts, sequence_length
             )
             token_ids_transformation = {
                 **token_ids_transformation,
-                "reason": "upstream_ids_not_canonical_length",
+                "reason": retokenize_reason,
             }
             token_ids_source = "retokenized"
 
-        dataset = self._load_data_contract(root, request.dataset_id)
-        tokenizer_name = dataset["tokenizer"]
         self._validate_samples(
             texts,
             token_ids,
             request.sample_count,
-            self._TOKENIZER_VOCAB_SIZES[tokenizer_name],
+            vocab_size,
             sequence_length,
         )
         records = [
@@ -754,6 +757,18 @@ class BaseTeacherAdapter:
             for token in tokens:
                 if type(token) is not int or token < 0 or token >= vocab_size:
                     raise AdapterError(f"invalid token at sample {index}: {token!r}")
+
+    @staticmethod
+    def _retokenize_reason(
+        token_ids: list[object], sequence_length: int, vocab_size: int
+    ) -> str | None:
+        for tokens in token_ids:
+            if not isinstance(tokens, list) or len(tokens) != sequence_length:
+                return "upstream_ids_not_canonical_length"
+            for token in tokens:
+                if type(token) is not int or token < 0 or token >= vocab_size:
+                    return "upstream_ids_outside_canonical_vocab"
+        return None
 
     @staticmethod
     def _validate_texts(texts: list[object]) -> None:
