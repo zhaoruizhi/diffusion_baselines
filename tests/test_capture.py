@@ -1,5 +1,7 @@
+import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from types import ModuleType
 
 import dlb.adapters.capture as capture_module
@@ -53,3 +55,39 @@ def test_run_main_points_hydra_at_sibling_config_directory(tmp_path: Path) -> No
         f"--config-path={config_dir.resolve()}",
         "mode=sample_eval",
     ]
+
+
+def test_teacher_capture_accepts_upstream_python_list_samples(tmp_path: Path) -> None:
+    """Catch FLM restore_model_and_sample returning list rows instead of a tensor."""
+
+    class Tokenizer:
+        def batch_decode(self, rows):
+            assert rows == [[1, 2], [3, 4]]
+            return ["one", "two"]
+
+    class TrainerBase:
+        tokenizer = Tokenizer()
+
+        def restore_model_and_sample(self):
+            return [[1, 2], [3, 4]]
+
+    module = ModuleType("fixture_teacher")
+    module.algo = SimpleNamespace(
+        trainer_base=SimpleNamespace(TrainerBase=TrainerBase)
+    )
+    module.main = lambda: TrainerBase().restore_model_and_sample()
+    capture_path = tmp_path / "capture.json"
+    invocation = capture_module.CaptureInvocation(
+        entrypoint=tmp_path / "main.py",
+        capture_path=capture_path,
+    )
+
+    capture_module._capture_teacher(module, invocation, [])
+
+    assert json.loads(capture_path.read_text(encoding="utf-8")) == {
+        "samples": [
+            {"sample_id": 0, "text": "one", "token_ids": [1, 2]},
+            {"sample_id": 1, "text": "two", "token_ids": [3, 4]},
+        ],
+        "schema": "dlb-upstream-token-capture-v1",
+    }

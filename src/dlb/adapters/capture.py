@@ -295,6 +295,21 @@ def _write_capture(
     atomic_json_write(path, {"schema": "dlb-upstream-token-capture-v1", "samples": samples})
 
 
+def _rows(value: object, *, label: str = "token rows") -> list[object]:
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().tolist()
+    if not isinstance(value, list):
+        raise ValueError(f"{label} returned invalid token rows")
+    rows: list[object] = []
+    for row in value:
+        if hasattr(row, "detach"):
+            row = row.detach().cpu().tolist()
+        elif not isinstance(row, list):
+            row = list(row)
+        rows.append(row)
+    return rows
+
+
 def _run_main(module: ModuleType, entrypoint: Path, forwarded: list[str]) -> None:
     previous_argv = sys.argv
     try:
@@ -366,7 +381,7 @@ def _capture_teacher(
                 else:
                     self._train_mode()
         result = original(self, *args, **kwargs)
-        token_rows = result.detach().cpu().tolist()
+        token_rows = _rows(result, label="teacher sampler")
         text_rows = list(self.tokenizer.batch_decode(result))
         if len(token_rows) != len(text_rows):
             raise ValueError("upstream token and text batch sizes differ")
@@ -473,21 +488,6 @@ def _positive_override(forwarded: list[str], key: str) -> int:
     if value <= 0:
         raise ValueError(f"RDLM {key} must be positive")
     return value
-
-
-def _rows(value: object) -> list[object]:
-    if hasattr(value, "detach"):
-        value = value.detach().cpu().tolist()
-    if not isinstance(value, list):
-        raise ValueError("RDLM shift/decode returned invalid token rows")
-    rows: list[object] = []
-    for row in value:
-        if hasattr(row, "detach"):
-            row = row.detach().cpu().tolist()
-        elif not isinstance(row, list):
-            row = list(row)
-        rows.append(row)
-    return rows
 
 
 def _require_saved_file(path: Path | None, label: str) -> Path:
