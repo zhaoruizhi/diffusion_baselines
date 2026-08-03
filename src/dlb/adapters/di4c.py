@@ -107,6 +107,8 @@ class Di4CAdapter(BaseTeacherAdapter):
             "--offline",
             "true",
         ]
+        if request.model_id == "mdlm_di4c" and request.dataset_id == "owt":
+            arguments.extend(["--allow-missing-embedded-config", "true"])
         self._validate_argv(arguments)
         return arguments
 

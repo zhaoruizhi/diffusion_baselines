@@ -410,6 +410,7 @@ def test_shared_capture_runs_langflow_with_locked_offline_tokenizer_and_records_
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising=False)
     entrypoint = tmp_path / "inference.py"
+    (entrypoint.parent / "configs").mkdir()
     source = """
 import argparse
 import os

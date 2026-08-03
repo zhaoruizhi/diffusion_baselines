@@ -53,6 +53,17 @@ def run_dir(item: RunRequest) -> Path:
     )
 
 
+def run_dir_at(root: Path, item: RunRequest) -> Path:
+    return (
+        root
+        / "results"
+        / "samples"
+        / item.dataset_id
+        / item.model_id
+        / f"steps_{item.step_count}"
+    )
+
+
 def option(command: list[str], key: str) -> str:
     index = command.index(key)
     return command[index + 1]
@@ -99,6 +110,23 @@ def prepare_tokenizer_binding(
         encoding="utf-8",
     )
     return data_config, downloads, snapshot
+
+
+def prepare_distilled_render_root(tmp_path: Path) -> Path:
+    for relative in (
+        Path("artifacts/data.yaml"),
+        Path("artifacts/checkpoints.yaml"),
+        Path("configs/experiments.yaml"),
+        Path("configs/sampling/di4c_mdlm_owt.yaml"),
+        Path("adapters/sample_di4c.py"),
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((ROOT / relative).read_text(encoding="utf-8"), encoding="utf-8")
+    entrypoint = tmp_path / "upstreams/di4c/sdtt/src/sdtt/main.py"
+    entrypoint.parent.mkdir(parents=True, exist_ok=True)
+    entrypoint.write_text("# fixture\n", encoding="utf-8")
+    return tmp_path
 
 
 @pytest.mark.parametrize(
@@ -183,6 +211,24 @@ def test_di4c_binds_teacher_family_and_dataset_intermediate_checkpoint(
     if family == "uniform_duo":
         assert "sdtt7-di4c2.ckpt" not in " ".join(command)
         assert "official/mdlm_di4c" not in " ".join(command)
+
+
+def test_only_official_mdlm_di4c_owt_allows_missing_embedded_config(
+    tmp_path: Path,
+) -> None:
+    root = prepare_distilled_render_root(tmp_path)
+    official = request("mdlm_di4c", "owt")
+    recipe = request("mdlm_di4c", "lm1b")
+
+    official_command = Di4CAdapter("mdlm").render_command(
+        official, run_dir_at(root, official), dry_run=True
+    )
+    recipe_command = Di4CAdapter("mdlm").render_command(
+        recipe, run_dir_at(root, recipe), dry_run=True
+    )
+
+    assert option(official_command, "--allow-missing-embedded-config") == "true"
+    assert "--allow-missing-embedded-config" not in recipe_command
 
 
 def test_di4c_rejects_cross_family_model_identity_before_checkpoint_resolution() -> None:
@@ -419,6 +465,18 @@ def test_embedded_config_must_match_manifest_selected_architecture() -> None:
 
     with pytest.raises(ValueError, match="model.n_blocks"):
         runtime.validate_embedded_config(authoritative, mismatched)
+
+
+def test_missing_embedded_config_is_allowed_only_for_explicit_release_escape() -> None:
+    runtime = load_runtime_module()
+    authoritative = complete_di4c_sampling_config()
+
+    with pytest.raises(ValueError, match="does not embed"):
+        runtime.validate_embedded_config(authoritative, None)
+
+    runtime.validate_embedded_config(
+        authoritative, None, allow_missing_embedded_config=True
+    )
 
 
 def complete_di4c_sampling_config() -> dict[str, object]:

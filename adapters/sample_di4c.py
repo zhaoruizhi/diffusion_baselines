@@ -48,6 +48,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--dataset", choices=("lm1b", "owt"), required=True)
     parser.add_argument("--offline", type=parse_bool, required=True)
+    parser.add_argument(
+        "--allow-missing-embedded-config", type=parse_bool, default=False
+    )
     parser.add_argument("--benchmark-output", type=Path)
     parser.add_argument("--benchmark-metadata", type=Path)
     parser.add_argument("--benchmark-precision", choices=("author",))
@@ -82,7 +85,11 @@ def main(argv: list[str] | None = None) -> int:
             sequence_length=args.seq_len,
             require_di4c=True,
         )
-        validate_embedded_config(config, embedded_config)
+        validate_embedded_config(
+            config,
+            embedded_config,
+            allow_missing_embedded_config=args.allow_missing_embedded_config,
+        )
         configure_for_sampling(
             config, tokenizer_snapshot=binding.snapshot, seq_len=args.seq_len
         )

@@ -241,8 +241,15 @@ _CHECKPOINT_CONFIG_FIELDS = (
 _OPTIONAL_CHECKPOINT_CONFIG_FIELDS = ("model.causal", "is_di4c")
 
 
-def validate_embedded_config(authoritative: object, embedded: object | None) -> None:
+def validate_embedded_config(
+    authoritative: object,
+    embedded: object | None,
+    *,
+    allow_missing_embedded_config: bool = False,
+) -> None:
     if embedded is None:
+        if allow_missing_embedded_config:
+            return
         raise ValueError("Lightning checkpoint does not embed its training config")
     for path in (*_CHECKPOINT_CONFIG_FIELDS, *_OPTIONAL_CHECKPOINT_CONFIG_FIELDS):
         expected = _optional_nested(authoritative, path)

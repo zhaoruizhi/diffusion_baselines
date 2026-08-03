@@ -391,13 +391,21 @@ def _rows(value: object, *, label: str = "token rows") -> list[object]:
     return rows
 
 
-def _run_main(module: ModuleType, entrypoint: Path, forwarded: list[str]) -> None:
+def _run_main(
+    module: ModuleType,
+    entrypoint: Path,
+    forwarded: list[str],
+    *,
+    hydra_config_path: bool = True,
+) -> None:
     previous_argv = sys.argv
+    upstream_arguments = (
+        _forwarded_with_hydra_config_path(entrypoint, forwarded)
+        if hydra_config_path
+        else forwarded
+    )
     try:
-        sys.argv = [
-            str(entrypoint),
-            *_forwarded_with_hydra_config_path(entrypoint, forwarded),
-        ]
+        sys.argv = [str(entrypoint), *upstream_arguments]
         module.main()
     finally:
         sys.argv = previous_argv
@@ -538,7 +546,7 @@ def _capture_langflow(
     owner.generate_samples = generate
     module.AutoTokenizer = AutoTokenizerProxy
     with _offline_huggingface():
-        _run_main(module, invocation.entrypoint, forwarded)
+        _run_main(module, invocation.entrypoint, forwarded, hydra_config_path=False)
     _write_capture(
         invocation.capture_path,
         texts,

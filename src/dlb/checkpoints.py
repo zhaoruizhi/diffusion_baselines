@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import subprocess
-from typing import Literal
+from typing import Literal, Union
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -107,7 +107,7 @@ class DirectSource(ManifestModel):
         return self
 
 
-Source = HuggingFaceSource | GDriveSource | ZenodoSource | DirectSource
+Source = Union[HuggingFaceSource, GDriveSource, ZenodoSource, DirectSource]
 
 
 class CheckpointResource(ManifestModel):

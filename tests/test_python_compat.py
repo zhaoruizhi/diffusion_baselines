@@ -50,3 +50,19 @@ def test_runtime_pep604_annotations_are_future_gated_for_python39() -> None:
             violations.append(f"{path.relative_to(ROOT)} uses PEP 604 annotations")
 
     assert violations == []
+
+
+def test_runtime_type_aliases_avoid_pep604_expressions_for_python39() -> None:
+    """Catch top-level A | B aliases that execute before Python 3.10."""
+
+    violations: list[str] = []
+    for path in python_runtime_files():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.BinOp):
+                if isinstance(node.value.op, ast.BitOr):
+                    violations.append(
+                        f"{path.relative_to(ROOT)} has runtime PEP 604 type alias"
+                    )
+
+    assert violations == []

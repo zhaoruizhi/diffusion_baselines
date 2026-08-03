@@ -134,6 +134,14 @@ def test_project_runtime_dependencies_are_available_in_every_environment():
         assert packages["pyyaml"] == "6.0.2", name
 
 
+def test_python39_pydantic_environments_include_annotation_backport():
+    environments = load_environments()
+
+    for name in {"mdlm", "rdlm"}:
+        packages = pinned_pip_dependencies(environments[name])
+        assert packages["eval-type-backport"] == "0.2.2"
+
+
 def test_sdtt_family_includes_pkg_resources_provider_for_legacy_imports():
     environments = load_environments()
 
@@ -679,9 +687,10 @@ def test_verify_all_checks_the_complete_method_import_mapping(fake_conda, tmp_pa
             "tokenizers", "torchmetrics", "torchvision", "tqdm", "transformers", "triton", "wandb",
         },
         "dlb-mdlm": {
-            "causal_conv1d", "datasets", "einops", "flash_attn", "fsspec", "huggingface_hub",
-            "hydra", "lightning", "mamba_ssm", "numpy", "omegaconf", "requests", "rich", "timm",
-            "tokenizers", "torchmetrics", "transformers", "wandb",
+            "causal_conv1d", "datasets", "einops", "eval_type_backport", "flash_attn",
+            "fsspec", "huggingface_hub", "hydra", "lightning", "mamba_ssm", "numpy",
+            "omegaconf", "requests", "rich", "timm", "tokenizers", "torchmetrics",
+            "transformers", "wandb",
         },
         "dlb-candi": {
             "datasets", "einops", "evaluate", "flash_attn", "fsspec", "huggingface_hub", "hydra",
@@ -689,8 +698,9 @@ def test_verify_all_checks_the_complete_method_import_mapping(fake_conda, tmp_pa
             "tqdm", "transformers",
         },
         "dlb-rdlm": {
-            "accelerate", "datasets", "einops", "fsspec", "huggingface_hub", "hydra", "numpy",
-            "omegaconf", "requests", "scipy", "tokenizers", "tqdm", "transformers", "wandb",
+            "accelerate", "datasets", "einops", "eval_type_backport", "fsspec",
+            "huggingface_hub", "hydra", "numpy", "omegaconf", "requests", "scipy",
+            "tokenizers", "tqdm", "transformers", "wandb",
         },
         "dlb-sdtt": {
             "datasets", "einops", "flash_attn", "fsspec", "huggingface_hub", "hydra", "lightning",
