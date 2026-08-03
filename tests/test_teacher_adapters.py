@@ -14,7 +14,9 @@ from dlb.adapters.duo import DuoAdapter
 from dlb.adapters.flm import FLMAdapter
 from dlb.adapters.mdlm import MDLMAdapter
 from dlb.command import main as command_main
-from dlb.runner import RunRequest
+from dlb.checkpoints import load_checkpoint_manifest
+from dlb.registry import load_registry
+from dlb.runner import RunRequest, _resolve_checkpoint_provenance
 
 
 ROOT = Path(__file__).parents[1]
@@ -68,25 +70,28 @@ def prepare_conversion_root(tmp_path: Path) -> Path:
 
 
 def canonical_conversion_request(root: Path, item: RunRequest) -> RunRequest:
-    selections = {
-        ("flm", "lm1b"): ("flm_lm1b_hf", None, None, "continuous_flm"),
-        ("flm", "owt"): ("flm_owt_hf", None, None, "continuous_flm"),
-        (
-            "mdlm",
-            "lm1b",
-        ): (
-            "flm_lm1b_reproductions",
-            "lm1b_MDLM_.ckpt",
-            "masked_mdlm",
-            "masked_mdlm",
-        ),
-    }
-    resource, path, selected_family, effective_family = selections[
-        (item.model_id, item.dataset_id)
-    ]
+    registry = load_registry(root / "configs" / "experiments.yaml")
+    manifest_model = load_checkpoint_manifest(root / "artifacts" / "checkpoints.yaml")
+    support = registry.models[item.model_id].datasets[item.dataset_id]
     manifest = root / "artifacts" / "checkpoints.yaml"
     manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
-    selected_path = path or "model.safetensors"
+    if support.train_recipe:
+        recipe = manifest_model.recipes[support.train_recipe]
+        checkpoint = root / recipe.output / str(recipe.sampling_checkpoint)
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint.write_bytes(b"ckp")
+        provenance = _resolve_checkpoint_provenance(root, item, support.train_recipe)
+        return replace(
+            item,
+            checkpoint_sha256=provenance.sha256,
+            checkpoint_lock_id=provenance.lock_id,
+            checkpoint_selection=provenance.selection,
+            checkpoint_teacher_family=provenance.teacher_family,
+        )
+
+    coverage = manifest_model.coverage[(item.model_id, item.dataset_id)]
+    resource = coverage.resource
+    selected_path = coverage.path or "model.safetensors"
     files = [
         {
             "path": f"checkpoints/fixture/{resource}/{selected_path}",
@@ -103,29 +108,13 @@ def canonical_conversion_request(root: Path, item: RunRequest) -> RunRequest:
         ),
         encoding="utf-8",
     )
-    selection = {
-        "resource": resource,
-        "path": path,
-        "teacher_family": selected_family,
-    }
-    digest = hashlib.sha256(
-        json.dumps(
-            {
-                "manifest_sha256": manifest_sha256,
-                "selector": selection,
-                "files": files,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-    ).hexdigest()
+    provenance = _resolve_checkpoint_provenance(root, item, support.train_recipe)
     return replace(
         item,
-        checkpoint_sha256=digest,
-        checkpoint_lock_id=f"{resource}:{manifest_sha256}:{path or 'all'}",
-        checkpoint_selection=selection,
-        checkpoint_teacher_family=effective_family,
+        checkpoint_sha256=provenance.sha256,
+        checkpoint_lock_id=provenance.lock_id,
+        checkpoint_selection=provenance.selection,
+        checkpoint_teacher_family=provenance.teacher_family,
     )
 
 
@@ -203,6 +192,28 @@ def test_flm_and_fmlm_render_exact_paper_sampling_semantics() -> None:
     assert override(lm1b_command, "algo") == "fmlm"
     assert override(lm1b_command, "sampling.gamma") == "0.8"
     assert override(owt_command, "sampling.gamma") == "1.0"
+
+
+def test_flm_family_commands_use_official_lightning_checkpoints(tmp_path: Path) -> None:
+    """Catch FLM/FMLM official ckpts being routed through the HF AutoModel branch."""
+
+    cells = (
+        ("flm", "lm1b", "checkpoints/official/flm_ckpt/lm1b/lm1b_flm.ckpt"),
+        ("flm", "owt", "checkpoints/official/flm_ckpt/owt/owt_flm.ckpt"),
+        ("fmlm", "lm1b", "checkpoints/official/fmlm_ckpt/lm1b/lm1b_fmlm.ckpt"),
+        ("fmlm", "owt", "checkpoints/official/fmlm_ckpt/owt/owt_fmlm.ckpt"),
+    )
+    adapter = FLMAdapter()
+    root = prepare_conversion_root(tmp_path)
+    (root / "upstreams" / "flm").mkdir(parents=True)
+    (root / "upstreams" / "flm" / "main.py").write_text("# fixture\n", encoding="utf-8")
+
+    for model, dataset, checkpoint in cells:
+        item = request(model, dataset)
+        command = adapter.render_command(item, run_dir(root, item), dry_run=True)
+
+        assert override(command, "algo.backbone") == "dit"
+        assert Path(override(command, "eval.checkpoint_path")) == root / checkpoint
 
 
 @pytest.mark.parametrize(

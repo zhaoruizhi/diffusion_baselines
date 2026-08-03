@@ -5,7 +5,7 @@ from dlb.runner import RunRequest
 
 
 class FLMAdapter(BaseTeacherAdapter):
-    identity = "dlb.adapters.flm:v1"
+    identity = "dlb.adapters.flm:v2"
     upstream = "flm"
     supported_models = frozenset({"flm", "fmlm"})
     teacher_families = {"flm": "continuous_flm", "fmlm": "continuous_flm"}
@@ -22,7 +22,7 @@ class FLMAdapter(BaseTeacherAdapter):
         del checkpoint
         overrides = [
             f"algo={request.model_id}",
-            "algo.backbone=hf_dit",
+            "algo.backbone=dit",
             "eval.disable_ema=False",
             "sampling.solver=euler",
         ]

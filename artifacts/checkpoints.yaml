@@ -203,6 +203,66 @@ resources:
         sdtt7-di4c2.ckpt: md5:b55b961b1f0d7f2ed55539452875ec15
     note: Masked SDTT/MDLM teacher release only; never valid for Duo/uniform Di4C cells.
 recipes:
+  flm_lm1b_official_ckpt:
+    model: flm
+    dataset: lm1b
+    provenance: official
+    teacher_family: continuous_flm
+    source: flm
+    source_commit: a1918d5164e5038e37d0b7a4fb2010ce75b863b3
+    command: >-
+      gdown --folder https://drive.google.com/drive/folders/1fNAx4LP2RwPBdqDQFQ_gRrYZI9u3Vq15
+      -O downloads/flm_official_ckpt && mkdir -p checkpoints/official/flm_ckpt/lm1b
+      && cp downloads/flm_official_ckpt/lm1b_flm.ckpt
+      checkpoints/official/flm_ckpt/lm1b/lm1b_flm.ckpt
+    output: checkpoints/official/flm_ckpt/lm1b
+    sampling_checkpoint: lm1b_flm.ckpt
+    note: Official FLM Lightning checkpoint staged from the author's public Drive release.
+  flm_owt_official_ckpt:
+    model: flm
+    dataset: owt
+    provenance: official
+    teacher_family: continuous_flm
+    source: flm
+    source_commit: a1918d5164e5038e37d0b7a4fb2010ce75b863b3
+    command: >-
+      gdown --folder https://drive.google.com/drive/folders/1fNAx4LP2RwPBdqDQFQ_gRrYZI9u3Vq15
+      -O downloads/flm_official_ckpt && mkdir -p checkpoints/official/flm_ckpt/owt
+      && cp downloads/flm_official_ckpt/owt_flm.ckpt
+      checkpoints/official/flm_ckpt/owt/owt_flm.ckpt
+    output: checkpoints/official/flm_ckpt/owt
+    sampling_checkpoint: owt_flm.ckpt
+    note: Official FLM Lightning checkpoint staged from the author's public Drive release.
+  fmlm_lm1b_official_ckpt:
+    model: fmlm
+    dataset: lm1b
+    provenance: official
+    teacher_family: continuous_flm
+    source: flm
+    source_commit: a1918d5164e5038e37d0b7a4fb2010ce75b863b3
+    command: >-
+      gdown --folder https://drive.google.com/drive/folders/1fNAx4LP2RwPBdqDQFQ_gRrYZI9u3Vq15
+      -O downloads/flm_official_ckpt && mkdir -p checkpoints/official/fmlm_ckpt/lm1b
+      && cp downloads/flm_official_ckpt/lm1b_fmlm.ckpt
+      checkpoints/official/fmlm_ckpt/lm1b/lm1b_fmlm.ckpt
+    output: checkpoints/official/fmlm_ckpt/lm1b
+    sampling_checkpoint: lm1b_fmlm.ckpt
+    note: Official FMLM Lightning checkpoint staged from the author's public Drive release.
+  fmlm_owt_official_ckpt:
+    model: fmlm
+    dataset: owt
+    provenance: official
+    teacher_family: continuous_flm
+    source: flm
+    source_commit: a1918d5164e5038e37d0b7a4fb2010ce75b863b3
+    command: >-
+      gdown --folder https://drive.google.com/drive/folders/1fNAx4LP2RwPBdqDQFQ_gRrYZI9u3Vq15
+      -O downloads/flm_official_ckpt && mkdir -p checkpoints/official/fmlm_ckpt/owt
+      && cp downloads/flm_official_ckpt/owt_fmlm.ckpt
+      checkpoints/official/fmlm_ckpt/owt/owt_fmlm.ckpt
+    output: checkpoints/official/fmlm_ckpt/owt
+    sampling_checkpoint: owt_fmlm.ckpt
+    note: Official FMLM Lightning checkpoint staged from the author's public Drive release.
   candi_owt:
     model: candi
     dataset: owt
@@ -311,10 +371,6 @@ recipes:
     prerequisites: [flm_lm1b_reproductions]
     note: Task 12's repository wrapper must adapt the BERT masked teacher to the absorbing Di4C shape; Zenodo contains OWT students only.
 coverage:
-  - {model: flm, dataset: lm1b, resource: flm_lm1b_hf}
-  - {model: flm, dataset: owt, resource: flm_owt_hf}
-  - {model: fmlm, dataset: lm1b, resource: fmlm_lm1b_hf}
-  - {model: fmlm, dataset: owt, resource: fmlm_owt_hf}
   - {model: langflow, dataset: owt, resource: langflow_owt_hf}
   - {model: duo, dataset: lm1b, resource: flm_lm1b_reproductions, path: lm1b_Duo.ckpt, teacher_family: uniform_duo}
   - {model: duo, dataset: owt, resource: duo_owt_hf}

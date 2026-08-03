@@ -297,6 +297,30 @@ def test_coverage_preserves_registry_provenance_and_teacher_family(registry, che
     )
 
 
+def test_flm_family_uses_official_lightning_checkpoint_recipes(registry, checkpoints):
+    """Catch official FLM/FMLM .ckpt files being replaced by incompatible HF dirs."""
+
+    expected = {
+        ("flm", "lm1b"): ("flm_lm1b_official_ckpt", "official/flm_ckpt/lm1b/lm1b_flm.ckpt"),
+        ("flm", "owt"): ("flm_owt_official_ckpt", "official/flm_ckpt/owt/owt_flm.ckpt"),
+        (
+            "fmlm",
+            "lm1b",
+        ): ("fmlm_lm1b_official_ckpt", "official/fmlm_ckpt/lm1b/lm1b_fmlm.ckpt"),
+        ("fmlm", "owt"): ("fmlm_owt_official_ckpt", "official/fmlm_ckpt/owt/owt_fmlm.ckpt"),
+    }
+    for cell, (recipe_id, path) in expected.items():
+        model, dataset = cell
+        support = registry.models[model].datasets[dataset]
+        recipe = checkpoints.recipes[recipe_id]
+
+        assert cell not in checkpoints.coverage
+        assert support.train_recipe == recipe_id
+        assert recipe.provenance == "official"
+        assert recipe.teacher_family == "continuous_flm"
+        assert f"checkpoints/{path}" == f"{recipe.output}/{recipe.sampling_checkpoint}"
+
+
 def test_training_recipes_are_explicit_and_pinned(checkpoints, registry):
     """Catch a recipe fallback that cannot identify its source revision and command."""
 
@@ -312,7 +336,13 @@ def test_training_recipes_are_explicit_and_pinned(checkpoints, registry):
         recipe = checkpoints.recipes[recipe_id]
         assert len(recipe.source_commit) == 40
         assert recipe.command.strip()
-        assert recipe.command.startswith(("bash scripts/train/", "bash scripts/distill/"))
+        if recipe.provenance == "official":
+            assert recipe.command.startswith("gdown --folder ")
+            assert "cp downloads/flm_official_ckpt/" in recipe.command
+        else:
+            assert recipe.command.startswith(
+                ("bash scripts/train/", "bash scripts/distill/")
+            )
         assert recipe.output.startswith("checkpoints/")
 
 

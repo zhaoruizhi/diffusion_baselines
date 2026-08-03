@@ -56,7 +56,9 @@ def make_request(command: list[str] | None = None) -> RunRequest:
     )
 
 
-def prepare_canonical_root(root: Path, *, source_sha: str = "a" * 40, checkpoint_sha: str = "b" * 64) -> None:
+def prepare_canonical_root(
+    root: Path, *, source_sha: str = "a" * 40, checkpoint_payload: bytes = b"checkpoint"
+) -> None:
     """Create the minimal canonical provenance inputs for the FLM/LM1B cell."""
 
     project_root = Path(__file__).parents[1]
@@ -70,25 +72,9 @@ def prepare_canonical_root(root: Path, *, source_sha: str = "a" * 40, checkpoint
     (root / "artifacts" / "source_lock.json").write_text(
         json.dumps({"sources": {"flm": {"commit": source_sha}}})
     )
-    (root / "artifacts" / "checkpoint_lock.json").write_text(
-        json.dumps(
-            {
-                "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
-                "resources": {
-                    "flm_lm1b_hf": {
-                        "status": "downloaded",
-                        "files": [
-                            {
-                                "path": "checkpoints/official/flm/lm1b/model.safetensors",
-                                "size_bytes": 3,
-                                "sha256": checkpoint_sha,
-                            }
-                        ],
-                    }
-                },
-            }
-        )
-    )
+    checkpoint = root / "checkpoints" / "official" / "flm_ckpt" / "lm1b" / "lm1b_flm.ckpt"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_bytes(checkpoint_payload)
 
 
 def test_runner_records_command_failure(tmp_path: Path) -> None:
@@ -125,7 +111,7 @@ def test_runner_skips_only_matching_valid_publication(tmp_path: Path) -> None:
     assert metadata["command"] == command
     assert metadata["command_sha256"]
     assert metadata["source_sha256"] == "a" * 40
-    assert metadata["checkpoint_lock_id"].startswith("flm_lm1b_hf:")
+    assert metadata["checkpoint_lock_id"].startswith("recipe:flm_lm1b_official_ckpt:")
 
 
 def test_runner_reruns_when_checkpoint_identity_changes(tmp_path: Path) -> None:
@@ -136,7 +122,7 @@ def test_runner_reruns_when_checkpoint_identity_changes(tmp_path: Path) -> None:
     adapter = FakeAdapter(command, make_records(2))
     first_request = make_request(command)
     assert run_experiment(first_request, tmp_path, adapter=adapter).status == "succeeded"
-    prepare_canonical_root(tmp_path, checkpoint_sha="z" * 64)
+    prepare_canonical_root(tmp_path, checkpoint_payload=b"changed-checkpoint")
     assert run_experiment(first_request, tmp_path, adapter=adapter).status == "succeeded"
     assert adapter.calls == 2
 
@@ -212,21 +198,32 @@ def test_runner_resolves_checkpoint_identity_from_coverage_lock(tmp_path: Path) 
     checkpoints_manifest = tmp_path / "artifacts" / "checkpoints.yaml"
     checkpoints_manifest.write_text((project_root / "artifacts" / "checkpoints.yaml").read_text())
     (tmp_path / "artifacts" / "source_lock.json").write_text(
-        json.dumps({"sources": {"flm": {"commit": "a" * 40}}})
+        json.dumps({"sources": {"duo": {"commit": "a" * 40}}})
     )
-    files = [{"path": "checkpoints/official/flm/lm1b/model.safetensors", "size_bytes": 3, "sha256": "b" * 64}]
+    files = [
+        {
+            "path": "checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_Duo.ckpt",
+            "size_bytes": 3,
+            "sha256": "b" * 64,
+        }
+    ]
     (tmp_path / "artifacts" / "checkpoint_lock.json").write_text(
         json.dumps(
             {
                 "manifest_sha256": hashlib.sha256(checkpoints_manifest.read_bytes()).hexdigest(),
-                "resources": {"flm_lm1b_hf": {"status": "downloaded", "files": files}},
+                "resources": {
+                    "flm_lm1b_reproductions": {
+                        "status": "downloaded",
+                        "files": files,
+                    }
+                },
             }
         )
     )
     command = [sys.executable, "-c", "print('ok')"]
     request = RunRequest(
-        run_id="flm-lm1b-steps-2",
-        model_id="flm",
+        run_id="duo-lm1b-steps-2",
+        model_id="duo",
         dataset_id="lm1b",
         step_count=2,
         seed=42,
@@ -242,7 +239,11 @@ def test_runner_resolves_checkpoint_identity_from_coverage_lock(tmp_path: Path) 
         json.dumps(
             {
                 "manifest_sha256": manifest_sha,
-                "selector": {"resource": "flm_lm1b_hf", "path": None, "teacher_family": None},
+                "selector": {
+                    "resource": "flm_lm1b_reproductions",
+                    "path": "lm1b_Duo.ckpt",
+                    "teacher_family": "uniform_duo",
+                },
                 "files": files,
             },
             sort_keys=True,
@@ -251,7 +252,10 @@ def test_runner_resolves_checkpoint_identity_from_coverage_lock(tmp_path: Path) 
         ).encode("utf-8")
     ).hexdigest()
     assert metadata["checkpoint_sha256"] == expected
-    assert metadata["checkpoint_lock_id"] == "flm_lm1b_hf:" + manifest_sha + ":all"
+    assert (
+        metadata["checkpoint_lock_id"]
+        == "flm_lm1b_reproductions:" + manifest_sha + ":lm1b_Duo.ckpt"
+    )
 
 
 def test_runner_resolves_recipe_checkpoint_identity(tmp_path: Path) -> None:

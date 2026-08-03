@@ -8,8 +8,8 @@ models:
     adapter: flm
     source: flm
     datasets:
-      lm1b: {status: supported, provenance: official}
-      owt: {status: supported, provenance: official}
+      lm1b: {status: supported, provenance: official, train_recipe: flm_lm1b_official_ckpt}
+      owt: {status: supported, provenance: official, train_recipe: flm_owt_official_ckpt}
   langflow:
     category: many
     environment: dlb-langflow
@@ -60,8 +60,8 @@ models:
     adapter: flm
     source: flm
     datasets:
-      lm1b: {status: supported, provenance: official}
-      owt: {status: supported, provenance: official}
+      lm1b: {status: supported, provenance: official, train_recipe: fmlm_lm1b_official_ckpt}
+      owt: {status: supported, provenance: official, train_recipe: fmlm_owt_official_ckpt}
   duo_dcd:
     category: few
     environment: dlb-duo
