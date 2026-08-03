@@ -23,6 +23,7 @@ dependencies:
       - lightning==2.2.1
       - loguru==0.7.2
       - mauve-text==0.3.0
+      - nltk==3.9.1
       - omegaconf==2.3.0
       - pandas==2.2.1
       - pydantic==2.12.4

@@ -194,7 +194,7 @@ def _validate_tasks(tasks: Iterable[MatrixTask]) -> None:
         if previous is not None and key < previous:
             raise ValueError("matrix tasks are not in stable order")
         previous = key
-        if task.category not in {"many", "few"}:
+        if task.category not in {"many", "few", "fixed_1024"}:
             raise ValueError(f"invalid task category: {task.category}")
         if task.steps <= 0 or task.sample_count <= 0:
             raise ValueError("steps and sample_count must be positive")

@@ -8,10 +8,11 @@
     "step_grids": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["many", "few"],
+      "required": ["many", "few", "fixed_1024"],
       "properties": {
         "many": {"const": [1, 2, 4, 8, 16, 32, 1024]},
-        "few": {"const": [1, 2, 4, 8, 16, 32]}
+        "few": {"const": [1, 2, 4, 8, 16, 32]},
+        "fixed_1024": {"const": [1024]}
       }
     },
     "models": {
@@ -21,7 +22,7 @@
         "additionalProperties": false,
         "required": ["category", "environment", "adapter", "source", "datasets"],
         "properties": {
-          "category": {"enum": ["many", "few"]},
+          "category": {"enum": ["many", "few", "fixed_1024"]},
           "environment": {"pattern": "^[a-z][a-z0-9-]*$"},
           "adapter": {"pattern": "^[a-z][a-z0-9-]*$"},
           "source": {"pattern": "^[a-z][a-z0-9-]*$"},

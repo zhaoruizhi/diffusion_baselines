@@ -139,6 +139,7 @@ def test_sdtt_family_includes_pkg_resources_provider_for_legacy_imports():
 
     for name in {"sdtt", "di4c"}:
         assert "setuptools==80.9.0" in pip_dependencies(environments[name])
+        assert "nltk==3.9.1" in pip_dependencies(environments[name])
 
 
 def test_known_pinned_dependency_pairs_use_compatible_versions():
@@ -693,13 +694,13 @@ def test_verify_all_checks_the_complete_method_import_mapping(fake_conda, tmp_pa
         },
         "dlb-sdtt": {
             "datasets", "einops", "flash_attn", "fsspec", "huggingface_hub", "hydra", "lightning",
-            "loguru", "mauve", "numpy", "omegaconf", "pandas", "requests", "safetensors", "tensorboard",
-            "timm", "tokenizers", "torchdata", "tqdm", "transformers", "wandb",
+            "loguru", "mauve", "nltk", "numpy", "omegaconf", "pandas", "requests", "safetensors",
+            "tensorboard", "timm", "tokenizers", "torchdata", "tqdm", "transformers", "wandb",
         },
         "dlb-di4c": {
             "datasets", "einops", "flash_attn", "fsspec", "huggingface_hub", "hydra", "lightning",
-            "loguru", "mauve", "numpy", "omegaconf", "pandas", "requests", "safetensors", "tensorboard",
-            "timm", "tokenizers", "torchdata", "tqdm", "transformers", "wandb",
+            "loguru", "mauve", "nltk", "numpy", "omegaconf", "pandas", "requests", "safetensors",
+            "tensorboard", "timm", "tokenizers", "torchdata", "tqdm", "transformers", "wandb",
         },
         "dlb-eval": {"accelerate", "datasets", "evaluate", "fsspec", "mauve", "sacrebleu", "scipy", "tokenizers", "transformers"},
     }

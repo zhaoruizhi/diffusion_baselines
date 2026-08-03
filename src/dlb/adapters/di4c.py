@@ -1,5 +1,7 @@
 """Adapters for masked-MDLM and uniform-Duo Di4C students."""
 
+from __future__ import annotations
+
 from pathlib import Path
 import sys
 from typing import Iterable

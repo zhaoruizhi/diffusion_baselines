@@ -1,6 +1,7 @@
 step_grids:
   many: [1, 2, 4, 8, 16, 32, 1024]
   few: [1, 2, 4, 8, 16, 32]
+  fixed_1024: [1024]
 models:
   flm:
     category: many
@@ -11,7 +12,7 @@ models:
       lm1b: {status: supported, provenance: official, train_recipe: flm_lm1b_official_ckpt}
       owt: {status: supported, provenance: official, train_recipe: flm_owt_official_ckpt}
   langflow:
-    category: many
+    category: fixed_1024
     environment: dlb-langflow
     adapter: langflow
     source: langflow

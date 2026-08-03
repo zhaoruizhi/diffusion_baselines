@@ -19,13 +19,17 @@ class LangFlowAdapter(BaseTeacherAdapter):
     def render_command(
         self, request: RunRequest, run_dir: Path, *, dry_run: bool
     ) -> list[str]:
-        root, length, _ = self._validate_request(request, run_dir)
+        root, _, _ = self._validate_request(request, run_dir)
+        if request.step_count != 1024:
+            raise AdapterError(
+                "pinned LangFlow inference.py does not expose variable sampling steps; "
+                "only the official 1024-step inference contract can be labeled faithfully"
+            )
         checkpoint = self._resolve_checkpoint(root, request, dry_run=dry_run)
         entrypoint = root / "upstreams" / "langflow" / "inference.py"
         if not entrypoint.is_file() or entrypoint.is_symlink():
             raise AdapterError(f"pinned upstream entrypoint is missing or unsafe: {entrypoint}")
         checkpoint_path = checkpoint.path / "model.safetensors"
-        output_path = run_dir.resolve() / "upstream_samples.txt"
         capture_path = run_dir.resolve() / "upstream_token_ids.json"
         tokenizer_name = self._load_data_contract(root, request.dataset_id)["tokenizer"]
         tokenizer_revision = self._tokenizer_revision(root, tokenizer_name)
@@ -58,16 +62,6 @@ class LangFlowAdapter(BaseTeacherAdapter):
             str(checkpoint_path),
             "--num_samples",
             str(request.sample_count),
-            "--batch_size",
-            "1",
-            "--num_steps",
-            str(request.step_count),
-            "--seq_length",
-            str(length),
-            "--seed",
-            str(request.seed),
-            "--output",
-            str(output_path),
         ]
         self._validate_argv(arguments)
         return arguments

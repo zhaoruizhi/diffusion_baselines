@@ -29,3 +29,24 @@ def test_runtime_code_avoids_python311_datetime_utc_symbol() -> None:
                 violations.append(f"{path.relative_to(ROOT)} uses datetime.UTC")
 
     assert violations == []
+
+
+def test_runtime_pep604_annotations_are_future_gated_for_python39() -> None:
+    """Catch imports that evaluate A | None annotations under Python 3.9."""
+
+    violations: list[str] = []
+    for path in python_runtime_files():
+        text = path.read_text(encoding="utf-8")
+        if "| None" not in text and " | " not in text:
+            continue
+        tree = ast.parse(text, filename=str(path))
+        future_annotations = any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "__future__"
+            and any(alias.name == "annotations" for alias in node.names)
+            for node in tree.body
+        )
+        if not future_annotations:
+            violations.append(f"{path.relative_to(ROOT)} uses PEP 604 annotations")
+
+    assert violations == []

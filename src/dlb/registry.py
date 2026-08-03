@@ -1,5 +1,7 @@
 """Validation and loading for the experiment coverage registry."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Literal
 
@@ -9,11 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MANY_STEPS = [1, 2, 4, 8, 16, 32, 1024]
 FEW_STEPS = [1, 2, 4, 8, 16, 32]
+FIXED_1024_STEPS = [1024]
 
 MODEL_IDENTIFIERS = {
     "flm": ("many", "dlb-flm", "flm", "flm"),
     "fmlm": ("few", "dlb-flm", "flm", "flm"),
-    "langflow": ("many", "dlb-langflow", "langflow", "langflow"),
+    "langflow": ("fixed_1024", "dlb-langflow", "langflow", "langflow"),
     "duo": ("many", "dlb-duo", "duo", "duo"),
     "duo_dcd": ("few", "dlb-duo", "duo", "duo"),
     "mdlm": ("many", "dlb-mdlm", "mdlm", "mdlm"),
@@ -24,7 +27,7 @@ MODEL_IDENTIFIERS = {
     "mdlm_di4c": ("few", "dlb-di4c", "di4c", "di4c"),
 }
 
-Category = Literal["many", "few"]
+Category = Literal["many", "few", "fixed_1024"]
 SupportStatus = Literal["supported", "unsupported"]
 Provenance = Literal["official", "reference_reproduction", "self_trained"]
 
@@ -76,8 +79,12 @@ class ExperimentRegistry(RegistryModel):
 
     @model_validator(mode="after")
     def validate_coverage(self) -> "ExperimentRegistry":
-        if self.step_grids != {"many": MANY_STEPS, "few": FEW_STEPS}:
-            raise ValueError("step grids must match the prescribed many and few schedules")
+        if self.step_grids != {
+            "many": MANY_STEPS,
+            "few": FEW_STEPS,
+            "fixed_1024": FIXED_1024_STEPS,
+        }:
+            raise ValueError("step grids must match the prescribed schedules")
         if set(self.models) != set(MODEL_IDENTIFIERS):
             raise ValueError("registry must contain the complete baseline model scope")
         for model_id, model in self.models.items():

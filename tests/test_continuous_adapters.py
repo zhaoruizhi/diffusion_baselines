@@ -199,33 +199,61 @@ def test_registry_exposes_only_the_two_supported_continuous_cells() -> None:
     assert registry.models["rdlm"].datasets["owt"].status == "unsupported"
 
 
-def test_langflow_renders_the_pinned_inference_argparse_contract() -> None:
-    """Catch invented hyphenated flags, the wrong length, or a mutable checkpoint selector."""
+def test_langflow_renders_the_pinned_inference_argparse_contract(tmp_path: Path) -> None:
+    """Catch flags that are not accepted by the pinned inference argparse parser."""
 
+    root = prepare_conversion_root(tmp_path)
+    entrypoint = root / "upstreams" / "langflow" / "inference.py"
+    entrypoint.parent.mkdir(parents=True)
+    entrypoint.write_text("# fixture\n", encoding="utf-8")
     item = request("langflow", "owt", steps=1024, samples=17)
-    command = LangFlowAdapter().render_command(item, run_dir(ROOT, item), dry_run=True)
+    command = LangFlowAdapter().render_command(item, run_dir(root, item), dry_run=True)
 
     assert command[1:3] == ["-B", "-u"]
-    assert Path(override(command, "--upstream-entrypoint")) == ROOT / "upstreams/langflow/inference.py"
+    assert Path(override(command, "--upstream-entrypoint")) == entrypoint
     assert override(command, "--capture-kind") == "langflow"
-    assert Path(override(command, "--data-config-path")) == ROOT / "artifacts/data.yaml"
+    assert Path(override(command, "--data-config-path")) == root / "artifacts/data.yaml"
     assert Path(override(command, "--downloads-manifest-path")) == (
-        ROOT / "data/manifests/downloads.json"
+        root / "data/manifests/downloads.json"
     )
     assert override(command, "--dataset-id") == "owt"
     assert Path(override(command, "--tokenizer-snapshot")) == (
-        ROOT
+        root
         / "data/raw/huggingface/hub/models--gpt2/snapshots"
         / "607a30d783dfa663caf39e06633721c8d4cfcd7e"
     )
     checkpoint = Path(option(command, "--checkpoint"))
-    assert checkpoint == ROOT / "checkpoints/official/langflow/owt/model.safetensors"
+    assert checkpoint == root / "checkpoints/official/langflow/owt/model.safetensors"
     assert option(command, "--num_samples") == "17"
-    assert option(command, "--num_steps") == "1024"
-    assert option(command, "--seq_length") == "1024"
-    assert option(command, "--seed") == "42"
-    assert Path(option(command, "--output")) == run_dir(ROOT, item) / "upstream_samples.txt"
-    assert not any(argument in {"--num-samples", "--num-steps", "--seq-length"} for argument in command)
+    assert not any(
+        argument
+        in {
+            "--batch_size",
+            "--num_steps",
+            "--seq_length",
+            "--seed",
+            "--output",
+            "--num-samples",
+            "--num-steps",
+            "--seq-length",
+        }
+        for argument in command
+    )
+
+
+def test_langflow_rejects_step_counts_not_exposed_by_pinned_inference(
+    tmp_path: Path,
+) -> None:
+    """Catch labeling fixed-step LangFlow samples as a different step budget."""
+
+    root = prepare_conversion_root(tmp_path)
+    entrypoint = root / "upstreams" / "langflow" / "inference.py"
+    entrypoint.parent.mkdir(parents=True)
+    entrypoint.write_text("# fixture\n", encoding="utf-8")
+    item = request("langflow", "owt", steps=32, samples=17)
+
+    with pytest.raises(AdapterError, match="invalid step count 32 for fixed_1024"):
+        LangFlowAdapter().render_command(item, run_dir(root, item), dry_run=True)
 
 
 def test_rdlm_renders_the_official_sde_sampler_and_saved_asset_trio() -> None:

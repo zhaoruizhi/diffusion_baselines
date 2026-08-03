@@ -91,3 +91,36 @@ def test_teacher_capture_accepts_upstream_python_list_samples(tmp_path: Path) ->
         ],
         "schema": "dlb-upstream-token-capture-v1",
     }
+
+
+def test_hf_masked_lm_capture_adapter_translates_duo_backbone_keywords(
+    monkeypatch,
+) -> None:
+    """Catch HF OWT checkpoints receiving the upstream x/sigma call contract."""
+
+    calls = []
+
+    class Output:
+        logits = "logits"
+
+    class HuggingFaceBackbone:
+        def forward(self, input_ids, timesteps):
+            calls.append((input_ids, timesteps))
+            return Output()
+
+    class AutoModelForMaskedLM:
+        @staticmethod
+        def from_pretrained(path):
+            return HuggingFaceBackbone()
+
+    fake_transformers = SimpleNamespace(AutoModelForMaskedLM=AutoModelForMaskedLM)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    with capture_module._patched_hf_masked_lm_backbone():
+        backbone = fake_transformers.AutoModelForMaskedLM.from_pretrained("checkpoint")
+        output = backbone(x="tokens", sigma="times", class_cond=None, weights=None)
+
+    assert output == "logits"
+    assert calls == [("tokens", "times")]
+    restored = fake_transformers.AutoModelForMaskedLM.from_pretrained("checkpoint")
+    assert type(restored) is HuggingFaceBackbone

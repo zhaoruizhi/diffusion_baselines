@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib
 import importlib.util
+import inspect
 import json
 import math
 import os
@@ -243,6 +244,86 @@ def _offline_huggingface():
                 os.environ[name] = value
 
 
+def _adapt_hf_masked_lm_backbone(model: object) -> object:
+    forward = getattr(model, "forward", None)
+    if not callable(forward):
+        return model
+    try:
+        parameters = inspect.signature(forward).parameters
+    except (TypeError, ValueError):
+        return model
+    if {"x", "sigma"} <= set(parameters):
+        return model
+    if not {"input_ids", "timesteps"} <= set(parameters):
+        return model
+    try:
+        import torch
+    except ImportError:
+        module_base = object
+    else:
+        module_base = torch.nn.Module
+
+    class KeywordBackboneAdapter(module_base):
+        def __init__(self, inner: object) -> None:
+            if module_base is not object:
+                super().__init__()
+            self.inner = inner
+
+        def forward(self, *args, **kwargs):
+            if "x" in kwargs:
+                kwargs["input_ids"] = kwargs.pop("x")
+            elif args:
+                kwargs["input_ids"] = args[0]
+                args = args[1:]
+            if "sigma" in kwargs:
+                kwargs["timesteps"] = kwargs.pop("sigma")
+            elif args:
+                kwargs["timesteps"] = args[0]
+                args = args[1:]
+            kwargs.pop("class_cond", None)
+            kwargs.pop("weights", None)
+            call = self.inner if callable(self.inner) else self.inner.forward
+            output = call(*args, **kwargs)
+            if hasattr(output, "logits"):
+                return output.logits
+            if isinstance(output, tuple) and output:
+                return output[0]
+            return output
+
+        def __getattr__(self, name: str) -> object:
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self.inner, name)
+
+    if module_base is object:
+        KeywordBackboneAdapter.__call__ = KeywordBackboneAdapter.forward
+    return KeywordBackboneAdapter(model)
+
+
+@contextmanager
+def _patched_hf_masked_lm_backbone():
+    try:
+        transformers = importlib.import_module("transformers")
+    except ImportError:
+        yield
+        return
+    auto_model = getattr(transformers, "AutoModelForMaskedLM", None)
+    original = getattr(auto_model, "from_pretrained", None)
+    if not callable(original):
+        yield
+        return
+
+    def from_pretrained(*args, **kwargs):
+        return _adapt_hf_masked_lm_backbone(original(*args, **kwargs))
+
+    auto_model.from_pretrained = from_pretrained
+    try:
+        yield
+    finally:
+        auto_model.from_pretrained = original
+
+
 def _load_entrypoint(path: Path) -> ModuleType:
     sys.path.insert(0, str(path.parent))
     module_name = "dlb_pinned_upstream_main"
@@ -392,7 +473,8 @@ def _capture_teacher(
         return result
 
     owner.restore_model_and_sample = capture
-    _run_main(module, invocation.entrypoint, forwarded)
+    with _patched_hf_masked_lm_backbone():
+        _run_main(module, invocation.entrypoint, forwarded)
     atomic_json_write(
         invocation.capture_path,
         {"schema": "dlb-upstream-token-capture-v1", "samples": captured},
