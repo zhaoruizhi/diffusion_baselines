@@ -810,21 +810,42 @@ def _validate_state(
 def uniform_to_absorbing(
     state: Mapping[str, object],
     *,
+    target_vocab_size: int | None = None,
     expected_keys: Collection[str] | None = None,
 ) -> dict[str, object]:
     """Append an all-zero absorbing state to a uniform-Duo backbone."""
 
     vocab, _ = _validate_state(state, expected_keys)
+    target_size = target_vocab_size or vocab + 1
+    if target_size not in {vocab, vocab + 1}:
+        raise RecipeError(
+            f"uniform teacher vocabulary {vocab} cannot map to target {target_size}"
+        )
     result = {key: _clone(value) for key, value in state.items()}
+    if target_size == vocab:
+        for key in BACKBONE_TENSOR_KEYS:
+            result[key] = _zero_vocab_row(result[key], target_size - 1)
+        _validate_state(result, set(state))
+        return result
     for key in BACKBONE_TENSOR_KEYS:
         result[key] = _append_or_move_row(
             state[key],
             source_row=None,
-            target_size=vocab + 1,
+            target_size=target_size,
             zero_source=False,
             name=key,
         )
     _validate_state(result, set(state))
+    return result
+
+
+def _zero_vocab_row(value: object, row: int) -> object:
+    if isinstance(value, list):
+        result = deepcopy(value)
+        result[row] = _zero_row_like(value, row)
+        return result
+    result = value.clone()
+    result[row].zero_()
     return result
 
 
@@ -940,13 +961,19 @@ def adapt_teacher_checkpoint(
     base_vocab = BASE_VOCAB_SIZES[launch.recipe.dataset]
     observed_vocab, hidden = _validate_state(state, expected)
     if launch.recipe.teacher_adapter == "uniform_to_absorbing":
-        if observed_vocab != base_vocab:
+        target_vocab = base_vocab + 1
+        if observed_vocab not in {base_vocab, target_vocab}:
             raise RecipeError(
-                f"uniform teacher vocabulary is {observed_vocab}, expected {base_vocab}"
+                "uniform teacher vocabulary is "
+                f"{observed_vocab}, expected {base_vocab} or {target_vocab}"
             )
-        adapted = uniform_to_absorbing(state, expected_keys=expected)
+        adapted = uniform_to_absorbing(
+            state,
+            target_vocab_size=target_vocab,
+            expected_keys=expected,
+        )
         transform = uniform_to_absorbing
-        mask_index = base_vocab
+        mask_index = target_vocab - 1
     elif launch.recipe.teacher_adapter == "masked_to_absorbing":
         target_vocab = base_vocab + 1
         if source_mask_index is None:

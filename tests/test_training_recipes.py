@@ -243,6 +243,21 @@ def test_uniform_teacher_appends_zero_absorbing_rows() -> None:
     assert state["vocab_embed.embedding"] == [[1, 2], [11, 12], [21, 22]]
 
 
+def test_uniform_teacher_zeroes_existing_absorbing_row() -> None:
+    state = tensor_state(vocab=4)
+
+    adapted = uniform_to_absorbing(
+        state,
+        target_vocab_size=4,
+        expected_keys=set(BACKBONE_TENSOR_KEYS),
+    )
+
+    assert adapted["vocab_embed.embedding"] == [[1, 2], [11, 12], [21, 22], [0, 0]]
+    assert adapted["output_layer.linear.weight"][-1] == [0, 0]
+    assert adapted["output_layer.linear.bias"] == [200, 201, 202, 0]
+    assert state["vocab_embed.embedding"][-1] == [31, 32]
+
+
 def test_masked_teacher_moves_existing_mask_row_to_final_absorbing_state() -> None:
     state = tensor_state()
     adapted = masked_to_absorbing(
