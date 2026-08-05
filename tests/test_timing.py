@@ -421,6 +421,36 @@ def test_cuda_metadata_distinguishes_loaded_runtime_from_compiled_toolkit(monkey
     }
 
 
+def test_cuda_metadata_falls_back_when_torch_cudart_lacks_runtime_version(
+    monkeypatch,
+) -> None:
+    fake_torch = SimpleNamespace(
+        version=SimpleNamespace(cuda="12.1"),
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            current_device=lambda: 1,
+            get_device_name=lambda device: f"fallback-gpu-{device}",
+            get_device_capability=lambda device: (8, 9),
+            cudart=lambda: SimpleNamespace(),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(timing_module, "_driver_version", lambda: "535.104.05")
+    monkeypatch.setattr(
+        timing_module, "_cuda_runtime_version_from_ctypes", lambda: 12040
+    )
+
+    assert timing_module.cuda_runtime_metadata() == {
+        "gpu_name": "fallback-gpu-1",
+        "gpu_index": 1,
+        "gpu_compute_capability": "8.9",
+        "cuda_runtime_version": "12.4",
+        "pytorch_compiled_cuda_toolkit": "12.1",
+        "nvidia_driver_version": "535.104.05",
+        "synchronization_policy": "torch.cuda.synchronize_before_start_and_after_generate",
+    }
+
+
 def test_cuda_metadata_fails_closed_without_loaded_runtime_evidence(monkeypatch) -> None:
     fake_torch = SimpleNamespace(
         version=SimpleNamespace(cuda="12.1"),
@@ -434,6 +464,11 @@ def test_cuda_metadata_fails_closed_without_loaded_runtime_evidence(monkeypatch)
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setattr(timing_module, "_driver_version", lambda: "535.104.05")
+    monkeypatch.setattr(
+        timing_module,
+        "_cuda_runtime_version_from_ctypes",
+        lambda: (_ for _ in ()).throw(RuntimeError("ctypes unavailable")),
+    )
 
     with pytest.raises(RuntimeError, match="loaded CUDA runtime"):
         timing_module.cuda_runtime_metadata()

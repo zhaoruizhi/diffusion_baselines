@@ -327,6 +327,11 @@ def _data_cache(root: Path, source: str, dataset: str) -> Path:
     return (root / "data" / "training_cache" / source / dataset).absolute()
 
 
+def _duo_integral_cache(root: Path, dataset: str) -> Path:
+    filename = "bert-base-uncased.pkl" if dataset == "lm1b" else "gpt2.pkl"
+    return (root / "upstreams" / "duo" / "integral" / filename).absolute()
+
+
 def _float_text(value: float) -> str:
     return format(value, ".12g")
 
@@ -462,6 +467,7 @@ def _standard_command(
                 f"training.finetune_path={teacher}",
                 "training.ema=0.999",
                 "algo.T=512",
+                f"algo.integral_cache_path={_duo_integral_cache(root, recipe.dataset)}",
                 f"algo.update_teacher_every={recipe.steps_per_round}",
                 "algo.teacher_ema=false",
                 "algo.linear_growth_dt=false",
@@ -1376,7 +1382,15 @@ def _expected_checkpoint(launch: LaunchSpec) -> tuple[Path, str]:
         if recipe.sampling_step is None:
             raise RecipeError("distilled recipe has no selected sampling step")
         relative = f"student_checkpoints/{recipe.sampling_step}.ckpt"
-        return launch.output / relative, relative
+        candidates = (
+            launch.output / relative,
+            launch.output / "checkpoints" / f"0-{recipe.sampling_step}.ckpt",
+            launch.output / "checkpoints" / "last.ckpt",
+        )
+        for candidate in candidates:
+            if candidate.is_file() and not candidate.is_symlink():
+                return candidate, relative
+        return candidates[0], relative
     return launch.output / "checkpoints" / "last.ckpt", "model.ckpt"
 
 
@@ -1457,11 +1471,9 @@ def execute_launch(launch: LaunchSpec, *, root: Path) -> str:
         )
     produced, relative = _expected_checkpoint(launch)
     _require_regular_file(produced, "selected training checkpoint")
-    if relative == "model.ckpt":
-        canonical = launch.output / relative
+    canonical = launch.output / relative
+    if produced != canonical:
         _copy_atomic(produced, canonical)
-    else:
-        canonical = produced
     marker = {
         "schema_version": 1,
         "identity_sha256": identity["identity_sha256"],

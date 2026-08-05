@@ -255,6 +255,74 @@ def _cuda_version(value: object) -> str:
     return f"{major}.{minor}" + (f".{patch}" if patch else "")
 
 
+def _cuda_runtime_version_from_torch(torch_cuda: object) -> int:
+    cudart_factory = getattr(torch_cuda, "cudart", None)
+    if not callable(cudart_factory):
+        raise RuntimeError("PyTorch does not expose torch.cuda.cudart")
+    cudart = cudart_factory()
+    runtime_query = getattr(cudart, "cudaRuntimeGetVersion", None)
+    if not callable(runtime_query):
+        raise RuntimeError("PyTorch cudart does not expose cudaRuntimeGetVersion")
+    return runtime_query()
+
+
+def _cuda_runtime_version_from_ctypes() -> int:
+    """Query libcudart directly when PyTorch does not bind the runtime symbol."""
+
+    import ctypes
+    import ctypes.util
+
+    candidates: list[str | None] = [None]
+    discovered = ctypes.util.find_library("cudart")
+    if discovered:
+        candidates.append(discovered)
+    candidates.extend(["libcudart.so", "libcudart.so.12", "libcudart.so.11.0"])
+
+    errors: list[str] = []
+    for candidate in dict.fromkeys(candidates):
+        label = candidate or "process"
+        try:
+            library = ctypes.CDLL(candidate) if candidate is not None else ctypes.CDLL(None)
+            runtime_query = getattr(library, "cudaRuntimeGetVersion")
+        except (AttributeError, OSError) as error:
+            errors.append(f"{label}: {error}")
+            continue
+        version = ctypes.c_int()
+        try:
+            runtime_query.argtypes = [ctypes.POINTER(ctypes.c_int)]
+            runtime_query.restype = ctypes.c_int
+            status = runtime_query(ctypes.byref(version))
+        except (AttributeError, TypeError, ValueError) as error:
+            errors.append(f"{label}: {error}")
+            continue
+        if status != 0:
+            errors.append(f"{label}: cudaRuntimeGetVersion returned {status}")
+            continue
+        return version.value
+
+    detail = "; ".join(errors[-3:])
+    suffix = f": {detail}" if detail else ""
+    raise RuntimeError(f"cannot query CUDA runtime version via libcudart{suffix}")
+
+
+def _cuda_runtime_version(torch_cuda: object) -> int:
+    errors: list[str] = []
+    for label, query in (
+        ("PyTorch cudart", lambda: _cuda_runtime_version_from_torch(torch_cuda)),
+        ("libcudart", _cuda_runtime_version_from_ctypes),
+    ):
+        try:
+            value = query()
+            _cuda_version(value)
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as error:
+            errors.append(f"{label}: {error}")
+            continue
+        return value
+    raise RuntimeError(
+        "cannot query the loaded CUDA runtime version: " + "; ".join(errors)
+    )
+
+
 def cuda_runtime_metadata() -> dict[str, object]:
     """Collect GPU evidence after initialization but outside every timed interval."""
 
@@ -267,9 +335,7 @@ def cuda_runtime_metadata() -> dict[str, object]:
     if not isinstance(compiled_toolkit, str) or not compiled_toolkit:
         raise RuntimeError("PyTorch does not report its compiled CUDA toolkit version")
     try:
-        cudart = torch.cuda.cudart()
-        runtime_query = getattr(cudart, "cudaRuntimeGetVersion")
-        runtime_version = _cuda_version(runtime_query())
+        runtime_version = _cuda_version(_cuda_runtime_version(torch.cuda))
         capability = torch.cuda.get_device_capability(device)
     except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as error:
         raise RuntimeError("cannot query the loaded CUDA runtime and selected GPU") from error

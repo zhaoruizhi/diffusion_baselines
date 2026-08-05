@@ -79,6 +79,36 @@ def test_sdtt_and_dcd_round_schedule() -> None:
         assert recipe.warmup_steps == 2_500
 
 
+@pytest.mark.parametrize(
+    ("dataset", "cache_name"),
+    [
+        ("lm1b", "bert-base-uncased.pkl"),
+        ("owt", "gpt2.pkl"),
+    ],
+)
+def test_duo_dcd_uses_repo_integral_cache_not_tokenizer_path(
+    dataset: str, cache_name: str
+) -> None:
+    launch = build_launch(
+        load_recipe("duo_dcd", dataset),
+        root=ROOT,
+        source=ROOT / "upstreams" / "duo",
+        output=ROOT / "checkpoints" / "self_trained" / dataset / "duo_dcd",
+        teacher=ROOT / "checkpoints" / "fixture" / "uniform_duo.ckpt",
+        devices=8,
+        nodes=1,
+        per_device_batch_size=16,
+        seed=42,
+        resume=True,
+    )
+
+    integral_cache = override(launch.command, "algo.integral_cache_path")
+    assert integral_cache == str(
+        (ROOT / "upstreams" / "duo" / "integral" / cache_name).absolute()
+    )
+    assert "snapshots" not in integral_cache
+
+
 def test_di4c_sampling_checkpoints_match_reference_selection() -> None:
     assert load_recipe("duo_di4c", "lm1b").sampling_step == 20_000
     assert load_recipe("mdlm_di4c", "lm1b").sampling_step == 20_000
@@ -491,6 +521,59 @@ def test_fake_launch_publishes_before_run_and_resumes_exact_completion(
     completed = json.loads((launch.output / "completed.json").read_text())
     assert completed["checkpoint"] == "model.ckpt"
     assert (launch.output / "model.ckpt").read_bytes() == b"fake checkpoint"
+
+
+def test_distilled_launch_canonicalizes_lightning_step_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipe = load_recipe("duo_di4c", "owt")
+    teacher = tmp_path / "checkpoints" / "fixture" / "uniform_duo.ckpt"
+    teacher.parent.mkdir(parents=True)
+    teacher.write_bytes(b"fake teacher")
+    launch = build_launch(
+        recipe,
+        root=tmp_path,
+        source=tmp_path / "upstreams" / "di4c",
+        output=tmp_path / "checkpoints" / "reference_reproduction" / "duo_di4c" / "owt",
+        teacher=teacher,
+        devices=2,
+        nodes=1,
+        per_device_batch_size=1,
+        seed=42,
+        resume=True,
+    )
+    monkeypatch.setattr(recipes_module, "_verify_source", lambda item: None)
+    monkeypatch.setattr(
+        recipes_module,
+        "_prepare_training_cache",
+        lambda item, root: {
+            "mode": "fake",
+            "processed_manifest_sha256": "a" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        recipes_module, "_compose_config", lambda item, environment: "mode: train\n"
+    )
+    monkeypatch.setattr(
+        recipes_module,
+        "adapt_teacher_checkpoint",
+        lambda item: {"mode": "fake_teacher_adapter"},
+    )
+
+    def fake_run(command, **kwargs):
+        checkpoint = launch.output / "checkpoints" / "0-50000.ckpt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_bytes(b"fake distilled checkpoint")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(recipes_module.subprocess, "run", fake_run)
+
+    assert recipes_module.execute_launch(launch, root=tmp_path) == "completed"
+    completed = json.loads((launch.output / "completed.json").read_text())
+    assert completed["checkpoint"] == "student_checkpoints/50000.ckpt"
+    assert (launch.output / completed["checkpoint"]).read_bytes() == (
+        b"fake distilled checkpoint"
+    )
 
 
 def test_source_verification_ignores_python_bytecode_cache_status(
