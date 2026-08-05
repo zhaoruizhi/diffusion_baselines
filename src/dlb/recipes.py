@@ -1196,8 +1196,80 @@ def _link_tree(source: Path, destination: Path) -> None:
             raise RecipeError(f"processed dataset contains a special file: {path}")
 
 
+def _remove_safe_tree(path: Path) -> None:
+    if not path.exists():
+        return
+    if path.is_symlink() or not path.is_dir():
+        raise RecipeError(f"training cache path is unsafe: {path}")
+    for child in path.rglob("*"):
+        if child.is_symlink():
+            raise RecipeError(f"training cache contains a symlink: {child}")
+    shutil.rmtree(path)
+
+
+def _dataset_columns(path: Path) -> set[str]:
+    from datasets import load_from_disk
+
+    dataset = load_from_disk(str(path))
+    return set(dataset.column_names)
+
+
+def _materialize_text_training_split(
+    source: Path,
+    destination: Path,
+    *,
+    sequence_length: int,
+    cache_is_current: bool,
+) -> None:
+    if destination.exists():
+        if destination.is_symlink() or not destination.is_dir():
+            raise RecipeError(f"training cache path is unsafe: {destination}")
+        if cache_is_current and {"input_ids", "attention_mask"} <= _dataset_columns(
+            destination
+        ):
+            return
+        _remove_safe_tree(destination)
+
+    from datasets import Sequence as DatasetSequence
+    from datasets import Value, load_from_disk
+
+    dataset = load_from_disk(str(source))
+    if "attention_mask" not in dataset.column_names:
+        features = deepcopy(dataset.features)
+        features["attention_mask"] = DatasetSequence(
+            Value("uint8"), length=sequence_length
+        )
+
+        def add_attention_mask(batch):
+            return {
+                "attention_mask": [
+                    [1] * len(input_ids) for input_ids in batch["input_ids"]
+                ]
+            }
+
+        dataset = dataset.map(
+            add_attention_mask,
+            batched=True,
+            features=features,
+            load_from_cache_file=False,
+            desc="Adding all-one attention masks for upstream training",
+        )
+
+    staged = destination.with_name(f".{destination.name}.{os.getpid()}.partial")
+    _remove_safe_tree(staged)
+    ensure_safe_directory(destination.parent)
+    try:
+        dataset.save_to_disk(str(staged))
+        if destination.exists():
+            _remove_safe_tree(destination)
+        os.replace(staged, destination)
+    finally:
+        _remove_safe_tree(staged)
+
+
 def _prepare_training_cache(launch: LaunchSpec, root: Path) -> dict[str, object]:
     processed, manifest = _processed_dataset(root, launch.recipe.dataset)
+    processed_manifest_sha = sha256_file(manifest)
     if launch.recipe.source == "rdlm":
         if launch.data_path.is_symlink() or not launch.data_path.is_dir():
             raise RecipeError(
@@ -1207,11 +1279,22 @@ def _prepare_training_cache(launch: LaunchSpec, root: Path) -> dict[str, object]
         return {
             "mode": "upstream_raw_retokenization",
             "processed_preflight": str(processed),
-            "processed_manifest_sha256": sha256_file(manifest),
+            "processed_manifest_sha256": processed_manifest_sha,
             "cache": str(launch.data_path),
         }
 
     ensure_safe_directory(launch.data_path)
+    cache_record = launch.data_path / "dlb_training_cache.json"
+    cache_is_current = False
+    if cache_record.is_file() and not cache_record.is_symlink():
+        try:
+            current = json.loads(cache_record.read_text(encoding="utf-8"))
+            cache_is_current = (
+                current.get("processed_manifest_sha256") == processed_manifest_sha
+                and current.get("format") == "hf_dataset_with_attention_mask_v1"
+            )
+        except (OSError, json.JSONDecodeError):
+            cache_is_current = False
     if launch.recipe.dataset == "lm1b":
         aliases = {
             "lm1b_train_bs128_wrapped.dat": processed / "train",
@@ -1226,11 +1309,17 @@ def _prepare_training_cache(launch: LaunchSpec, root: Path) -> dict[str, object]
     for name, source in aliases.items():
         if not source.is_dir():
             raise RecipeError(f"processed split is missing: {source}")
-        _link_tree(source, launch.data_path / name)
+        _materialize_text_training_split(
+            source,
+            launch.data_path / name,
+            sequence_length=launch.recipe.sequence_length,
+            cache_is_current=cache_is_current,
+        )
     record = {
-        "mode": "hardlink_or_copy_bridge",
+        "mode": "materialized_bridge",
+        "format": "hf_dataset_with_attention_mask_v1",
         "processed_path": str(processed),
-        "processed_manifest_sha256": sha256_file(manifest),
+        "processed_manifest_sha256": processed_manifest_sha,
         "cache": str(launch.data_path),
         "aliases": {name: str(path) for name, path in aliases.items()},
     }

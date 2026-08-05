@@ -583,6 +583,47 @@ def test_distilled_launch_canonicalizes_lightning_step_checkpoint(
     )
 
 
+def test_training_cache_bridge_adds_attention_mask_for_duo_text_batches(
+    tmp_path: Path,
+) -> None:
+    datasets = pytest.importorskip("datasets")
+    Dataset = datasets.Dataset
+    load_from_disk = datasets.load_from_disk
+
+    processed = tmp_path / "data" / "processed" / "lm1b-bert-128"
+    (tmp_path / "data" / "manifests").mkdir(parents=True)
+    for split in ("train", "validation"):
+        Dataset.from_dict(
+            {"input_ids": [[101] + [7] * 126 + [102]]}
+        ).save_to_disk(str(processed / split))
+    (tmp_path / "data" / "manifests" / "lm1b.json").write_text(
+        json.dumps({"dataset": "lm1b", "sequence_length": 128}),
+        encoding="utf-8",
+    )
+
+    launch = build_launch(
+        load_recipe("duo_dcd", "lm1b"),
+        root=tmp_path,
+        source=tmp_path / "upstreams" / "duo",
+        output=tmp_path / "checkpoints" / "reference_reproduction" / "duo_dcd" / "lm1b",
+        teacher=tmp_path / "checkpoints" / "fixture" / "uniform_duo.ckpt",
+        devices=1,
+        nodes=1,
+        per_device_batch_size=128,
+        seed=42,
+        resume=True,
+    )
+
+    record = recipes_module._prepare_training_cache(launch, tmp_path)
+    cached = load_from_disk(
+        str(launch.data_path / "lm1b_train_bs128_wrapped.dat")
+    )
+
+    assert record["format"] == "hf_dataset_with_attention_mask_v1"
+    assert set(cached.column_names) == {"input_ids", "attention_mask"}
+    assert cached[0]["attention_mask"] == [1] * 128
+
+
 def test_source_verification_ignores_python_bytecode_cache_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
