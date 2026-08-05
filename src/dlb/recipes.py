@@ -229,6 +229,7 @@ def load_recipe(model: str, dataset: str) -> TrainingRecipe:
             model,
             dataset,
             source="duo",
+            entrypoint="../../adapters/train_duo_dcd.py",
             max_steps=80_000,
             global_batch_size=128,
             learning_rate=6e-5,

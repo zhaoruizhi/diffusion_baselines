@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import importlib.util
 
 import pytest
 
@@ -114,6 +115,42 @@ def test_duo_dcd_uses_repo_integral_cache_not_tokenizer_path(
     assert override(launch.command, "+algo.curriculum.mode") == "simple"
     assert override(launch.command, "+algo.curriculum.gamma_min") == "-4"
     assert override(launch.command, "+algo.curriculum.gamma_max") == "-1"
+    assert Path(launch.command[2]).name == "train_duo_dcd.py"
+
+
+def test_duo_dcd_wrapper_accepts_trainer_base_nll_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "train_duo_dcd_for_test", ROOT / "adapters" / "train_duo_dcd.py"
+    )
+    assert spec is not None and spec.loader is not None
+    train_duo_dcd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(train_duo_dcd)
+
+    calls = []
+
+    class Distillation:
+        def nll(
+            self,
+            x0,
+            output_tokens,
+            current_accumulation_step=None,
+            train_mode=None,
+        ):
+            calls.append(
+                (x0, output_tokens, current_accumulation_step, train_mode)
+            )
+            return "loss"
+
+    algo = type(sys)("algo")
+    algo.Distillation = Distillation
+    monkeypatch.setitem(sys.modules, "algo", algo)
+
+    train_duo_dcd._patch_distillation_nll()
+
+    assert Distillation().nll("x0", None, "output", "accum", True) == "loss"
+    assert calls == [("x0", "output", "accum", True)]
 
 
 def test_di4c_sampling_checkpoints_match_reference_selection() -> None:
