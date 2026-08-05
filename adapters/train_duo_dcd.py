@@ -37,11 +37,21 @@ def _patch_distillation_nll() -> None:
 
 
 def main() -> int:
+    import hydra
+
     sys.path.insert(0, str(Path.cwd()))
     _patch_distillation_nll()
-    from main import main as upstream_main
+    import main as upstream_main
 
-    return int(upstream_main() or 0)
+    @hydra.main(
+        version_base=None,
+        config_path="../upstreams/duo/configs",
+        config_name="config",
+    )
+    def run(config: Any) -> None:
+        upstream_main.main.__wrapped__(config)
+
+    return int(run() or 0)
 
 
 if __name__ == "__main__":
