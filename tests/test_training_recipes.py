@@ -103,10 +103,17 @@ def test_duo_dcd_uses_repo_integral_cache_not_tokenizer_path(
     )
 
     integral_cache = override(launch.command, "algo.integral_cache_path")
+    curriculum_integral_cache = override(
+        launch.command, "+algo.curriculum.integral_cache_path"
+    )
     assert integral_cache == str(
         (ROOT / "upstreams" / "duo" / "integral" / cache_name).absolute()
     )
+    assert curriculum_integral_cache == integral_cache
     assert "snapshots" not in integral_cache
+    assert override(launch.command, "+algo.curriculum.mode") == "simple"
+    assert override(launch.command, "+algo.curriculum.gamma_min") == "-4"
+    assert override(launch.command, "+algo.curriculum.gamma_max") == "-1"
 
 
 def test_di4c_sampling_checkpoints_match_reference_selection() -> None:
