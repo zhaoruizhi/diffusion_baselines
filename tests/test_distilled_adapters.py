@@ -507,6 +507,21 @@ def test_config_validation_selects_only_sampling_fields_and_standard_references(
     runtime.validate_embedded_config(guarded, ResolverGuardedDict(config))
 
 
+def test_config_validation_accepts_locked_tokenizer_snapshot_path() -> None:
+    runtime = load_runtime_module()
+    config = complete_di4c_sampling_config()
+    snapshot = Path("/locked/hub/models--gpt2/snapshots/" + "a" * 40)
+    config["tokenizer"]["name"] = str(snapshot)
+    binding = runtime.TokenizerBinding("gpt2", "a" * 40, snapshot)
+
+    runtime.validate_sampling_config(
+        config,
+        binding=binding,
+        sequence_length=1024,
+        require_di4c=True,
+    )
+
+
 def test_real_omegaconf_validation_ignores_unregistered_unrelated_resolvers() -> None:
     OmegaConf = pytest.importorskip("omegaconf").OmegaConf
     runtime = load_runtime_module()

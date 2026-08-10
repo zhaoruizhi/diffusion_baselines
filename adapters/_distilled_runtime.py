@@ -274,7 +274,8 @@ def validate_sampling_config(
 ) -> None:
     for path in _CHECKPOINT_CONFIG_FIELDS:
         _nested(config, path)
-    if _nested(config, "tokenizer.name") != binding.tokenizer_id:
+    tokenizer_name = _nested(config, "tokenizer.name")
+    if tokenizer_name != binding.tokenizer_id and Path(str(tokenizer_name)).resolve() != binding.snapshot.resolve():
         raise ValueError("sampling config tokenizer differs from canonical data contract")
     if _nested(config, "model.length") != sequence_length:
         raise ValueError("sampling config sequence length differs from canonical dataset")
