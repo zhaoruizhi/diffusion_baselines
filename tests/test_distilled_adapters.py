@@ -213,22 +213,27 @@ def test_di4c_binds_teacher_family_and_dataset_intermediate_checkpoint(
         assert "official/mdlm_di4c" not in " ".join(command)
 
 
-def test_only_official_mdlm_di4c_owt_allows_missing_embedded_config(
+def test_owt_di4c_checkpoints_allow_missing_embedded_config(
     tmp_path: Path,
 ) -> None:
     root = prepare_distilled_render_root(tmp_path)
-    official = request("mdlm_di4c", "owt")
-    recipe = request("mdlm_di4c", "lm1b")
+    official_owt = request("mdlm_di4c", "owt")
+    reproduced_owt = request("duo_di4c", "owt")
+    recipe_lm1b = request("mdlm_di4c", "lm1b")
 
-    official_command = Di4CAdapter("mdlm").render_command(
-        official, run_dir_at(root, official), dry_run=True
+    official_owt_command = Di4CAdapter("mdlm").render_command(
+        official_owt, run_dir_at(root, official_owt), dry_run=True
     )
-    recipe_command = Di4CAdapter("mdlm").render_command(
-        recipe, run_dir_at(root, recipe), dry_run=True
+    reproduced_owt_command = Di4CAdapter("duo").render_command(
+        reproduced_owt, run_dir_at(root, reproduced_owt), dry_run=True
+    )
+    recipe_lm1b_command = Di4CAdapter("mdlm").render_command(
+        recipe_lm1b, run_dir_at(root, recipe_lm1b), dry_run=True
     )
 
-    assert option(official_command, "--allow-missing-embedded-config") == "true"
-    assert "--allow-missing-embedded-config" not in recipe_command
+    assert option(official_owt_command, "--allow-missing-embedded-config") == "true"
+    assert option(reproduced_owt_command, "--allow-missing-embedded-config") == "true"
+    assert "--allow-missing-embedded-config" not in recipe_lm1b_command
 
 
 def test_di4c_rejects_cross_family_model_identity_before_checkpoint_resolution() -> None:
