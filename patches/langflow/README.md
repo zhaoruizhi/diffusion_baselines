@@ -2,8 +2,8 @@
 
 The adapter targets the read-only LangFlow checkout at commit
 `a712b08570c56c787d6ef24f8e906a2dcdf768f5`. It does not patch or copy model
-code. The only supported registry cell is LangFlow/OWT; LangFlow/LM1B remains a
-structured registry rejection and is never replaced with the OWT checkpoint.
+code. The supported registry cells are LangFlow/LM1B and LangFlow/OWT; each
+cell binds its own official Hugging Face checkpoint and tokenizer contract.
 
 The pinned release's real entrypoint is `upstreams/langflow/inference.py`, not
 the Hydra `main.py` shape used by the Task 7 teachers. Its argparse options use
@@ -12,10 +12,10 @@ underscores, so the adapter deliberately renders `--num_samples`,
 flags in the older plan example. The remaining exact mapping is:
 
 - `--checkpoint`: immutable canonical
-  `checkpoints/official/langflow/owt/model.safetensors`
+  `checkpoints/official/langflow/<dataset>/model.safetensors`
 - `--num_samples`: requested sample count, with upstream remainder batching
 - `--num_steps`: requested many-step grid value
-- `--seq_length`: canonical OWT length 1024
+- `--seq_length`: canonical dataset length, 128 for LM1B and 1024 for OWT
 - `--seed`: request seed
 - `--output`: canonical `upstream_samples.txt` in the run directory
 
@@ -24,12 +24,12 @@ the real `LangFlow.generate_samples` method and the text returned by the real
 tokenizer. It writes `upstream_token_ids.json` using
 `dlb-upstream-token-capture-v1`; conversion does not parse the upstream text
 file's human-oriented sample delimiters. Before upstream execution, the
-wrapper cross-checks the OWT tokenizer and revision in `artifacts/data.yaml`
+wrapper cross-checks the dataset tokenizer and revision in `artifacts/data.yaml`
 against `data/manifests/downloads.json`, requires that manifest's immutable
-local snapshot directory, and replaces the upstream movable `"gpt2"` request
+local snapshot directory, and replaces the upstream movable tokenizer request
 with that path plus `local_files_only=True` under Hugging Face offline mode.
 There is no network or moving-revision fallback. Conversion requires exactly the
-requested number of 1024-token rows and validates Task 7's runner-resolved
+requested number of fixed-length token rows and validates Task 7's runner-resolved
 checkpoint digest, lock ID, selection, and `continuous_langflow` family before
 reading the capture.
 

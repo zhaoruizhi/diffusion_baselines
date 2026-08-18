@@ -22,7 +22,7 @@ checkpoints/self_trained/
 artifacts/checkpoint_lock.json
 ```
 
-官方 Hugging Face 资源包括 FLM/FMLM、LangFlow OWT、Duo OWT、Duo+DCD OWT、MDLM OWT、MDLM+SDTT OWT。Google Drive/Zenodo 资源用于 RDLM LM1B、LM1B reproduction、raw Duo OWT 和 MDLM Di4C。Duo/uniform teacher 不能使用 masked MDLM/SDTT 文件替代，反之亦然。
+官方 Hugging Face 资源包括 FLM/FMLM、LangFlow LM1B/OWT、Duo OWT、Duo+DCD OWT、MDLM OWT、MDLM+SDTT OWT。Google Drive/Zenodo 资源用于 RDLM LM1B、LM1B reproduction、raw Duo OWT 和 MDLM Di4C。Duo/uniform teacher 不能使用 masked MDLM/SDTT 文件替代，反之亦然。
 
 ## 下载失败处理
 

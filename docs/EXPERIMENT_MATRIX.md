@@ -5,7 +5,7 @@
 | 类别 | 逻辑方法 | 步数 | 数据集 cell | 任务数 |
 |---|---|---|---:|---:|
 | Many-step | FLM | 1,2,4,8,16,32,1024 | LM1B、OWT | 14 |
-| Many-step | LangFlow | 1,2,4,8,16,32,1024 | OWT | 7 |
+| Many-step | LangFlow | 1,2,4,8,16,32,1024 | LM1B、OWT | 14 |
 | Many-step | Duo | 1,2,4,8,16,32,1024 | LM1B、OWT | 14 |
 | Many-step | MDLM | 1,2,4,8,16,32,1024 | LM1B、OWT | 14 |
 | Many-step | CANDI | 1,2,4,8,16,32,1024 | LM1B、OWT | 14 |
@@ -15,9 +15,9 @@
 | Few-step | Duo+Di4C | 1,2,4,8,16,32 | LM1B、OWT | 12 |
 | Few-step | MDLM+SDTT | 1,2,4,8,16,32 | LM1B、OWT | 12 |
 | Few-step | MDLM+Di4C | 1,2,4,8,16,32 | LM1B、OWT | 12 |
-| **合计** |  |  |  | **130** |
+| **合计** |  |  |  | **137** |
 
-LangFlow/LM1B 和 RDLM/OWT 是注册表声明的 unsupported cell，各自只保留一条 reason，不展开为 steps。
+RDLM/OWT 是注册表声明的 unsupported cell，只保留一条 reason，不展开为 steps。
 
 ## 结果契约
 

@@ -12,14 +12,12 @@ models:
       lm1b: {status: supported, provenance: official, train_recipe: flm_lm1b_official_ckpt}
       owt: {status: supported, provenance: official, train_recipe: flm_owt_official_ckpt}
   langflow:
-    category: fixed_1024
+    category: many
     environment: dlb-langflow
     adapter: langflow
     source: langflow
     datasets:
-      lm1b:
-        status: unsupported
-        reason: No complete public LM1B checkpoint or training release is available.
+      lm1b: {status: supported, provenance: official}
       owt: {status: supported, provenance: official}
   duo:
     category: many

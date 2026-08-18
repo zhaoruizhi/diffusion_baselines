@@ -24,6 +24,34 @@ from dlb.timing import benchmark, publish_timing
 ROOT = Path(__file__).parents[1]
 
 
+def _prepare_benchmark_root(tmp_path: Path) -> Path:
+    for relative in (
+        Path("artifacts/data.yaml"),
+        Path("artifacts/checkpoints.yaml"),
+        Path("configs/experiments.yaml"),
+        Path("configs/sampling/di4c_mdlm_owt.yaml"),
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((ROOT / relative).read_text(encoding="utf-8"), encoding="utf-8")
+    for relative in (
+        Path("upstreams/flm/main.py"),
+        Path("upstreams/duo/main.py"),
+        Path("upstreams/mdlm/main.py"),
+        Path("upstreams/candi/main.py"),
+        Path("upstreams/langflow/inference.py"),
+        Path("upstreams/rdlm/main.py"),
+        Path("upstreams/sdtt/src/sdtt/main.py"),
+        Path("upstreams/di4c/sdtt/src/sdtt/main.py"),
+        Path("adapters/sample_sdtt.py"),
+        Path("adapters/sample_di4c.py"),
+    ):
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# fixture\n", encoding="utf-8")
+    return tmp_path
+
+
 class FakeClock:
     def __init__(self, values: list[float]) -> None:
         self._values = iter(values)
@@ -622,23 +650,25 @@ def test_runtime_code_binding_includes_the_loaded_checkpoint_model_class() -> No
     assert all(len(record["sha256"]) == 64 for record in records)
 
 
-def test_every_registry_cell_has_a_concrete_benchmark_command_or_structured_skip() -> None:
+def test_every_registry_cell_has_a_concrete_benchmark_command_or_structured_skip(
+    tmp_path: Path,
+) -> None:
+    root = _prepare_benchmark_root(tmp_path)
     records = render_benchmark_matrix(
-        root=ROOT,
+        root=root,
         models=None,
         datasets=("lm1b", "owt"),
         steps=32,
         seed=42,
         precision="author",
-        output_root=ROOT / "results/timing",
+        output_root=root / "results/timing",
         dry_run=True,
     )
 
     supported = [record for record in records if record["status"] == "supported"]
     skipped = [record for record in records if record["status"] == "unsupported"]
-    assert len(supported) == 20
+    assert len(supported) == 21
     assert {(record["model"], record["dataset"]) for record in skipped} == {
-        ("langflow", "lm1b"),
         ("rdlm", "owt"),
     }
     for record in supported:
@@ -672,20 +702,24 @@ def test_every_registry_cell_has_a_concrete_benchmark_command_or_structured_skip
         assert str(record["precision_policy"]).startswith(policy_owner + ":")
 
 
-def test_benchmark_matrix_calls_adapter_benchmark_hook_not_plain_sampling(monkeypatch) -> None:
+def test_benchmark_matrix_calls_adapter_benchmark_hook_not_plain_sampling(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     def forbidden(*args, **kwargs):
         raise AssertionError("plain render_command must not be the matrix integration boundary")
 
     monkeypatch.setattr(BaseTeacherAdapter, "render_command", forbidden)
+    root = _prepare_benchmark_root(tmp_path)
 
     records = render_benchmark_matrix(
-        root=ROOT,
+        root=root,
         models=("langflow",),
         datasets=("owt",),
         steps=32,
         seed=42,
         precision="author",
-        output_root=ROOT / "results/timing",
+        output_root=root / "results/timing",
         dry_run=True,
     )
 

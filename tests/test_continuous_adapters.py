@@ -70,10 +70,25 @@ def prepare_conversion_root(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def prepare_command_root(tmp_path: Path) -> Path:
+    root = prepare_conversion_root(tmp_path)
+    for relative in (
+        Path("upstreams/langflow/inference.py"),
+        Path("upstreams/rdlm/main.py"),
+    ):
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# fixture\n", encoding="utf-8")
+    return root
+
+
 def canonical_conversion_request(root: Path, item: RunRequest) -> RunRequest:
+    langflow_resource = (
+        "langflow_lm1b_hf" if item.dataset_id == "lm1b" else "langflow_owt_hf"
+    )
     resources = {
         "langflow": (
-            "langflow_owt_hf",
+            langflow_resource,
             "continuous_langflow",
             [
                 "config.json",
@@ -188,25 +203,39 @@ def prepare_tokenizer_binding(
     return data_config, downloads, snapshot
 
 
-def test_registry_exposes_only_the_two_supported_continuous_cells() -> None:
-    """Catch either unsupported cell being silently substituted by another model."""
+def test_registry_exposes_langflow_and_rdlm_supported_continuous_cells() -> None:
+    """Catch supported continuous cells being silently substituted or rejected."""
 
     registry = load_registry(ROOT / "configs" / "experiments.yaml")
 
     assert registry.models["langflow"].datasets["owt"].status == "supported"
-    assert registry.models["langflow"].datasets["lm1b"].status == "unsupported"
+    assert registry.models["langflow"].datasets["lm1b"].status == "supported"
     assert registry.models["rdlm"].datasets["lm1b"].status == "supported"
     assert registry.models["rdlm"].datasets["owt"].status == "unsupported"
 
 
-def test_langflow_renders_the_pinned_inference_argparse_contract(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("dataset", "steps", "tokenizer_name", "tokenizer_revision", "sequence_length"),
+    [
+        ("lm1b", 32, "bert-base-uncased", "86b5e0934494bd15c9632b12f734a8a67f723594", 128),
+        ("owt", 1024, "gpt2", "607a30d783dfa663caf39e06633721c8d4cfcd7e", 1024),
+    ],
+)
+def test_langflow_renders_the_pinned_inference_argparse_contract(
+    tmp_path: Path,
+    dataset: str,
+    steps: int,
+    tokenizer_name: str,
+    tokenizer_revision: str,
+    sequence_length: int,
+) -> None:
     """Catch flags that are not accepted by the pinned inference argparse parser."""
 
     root = prepare_conversion_root(tmp_path)
     entrypoint = root / "upstreams" / "langflow" / "inference.py"
     entrypoint.parent.mkdir(parents=True)
     entrypoint.write_text("# fixture\n", encoding="utf-8")
-    item = request("langflow", "owt", steps=1024, samples=17)
+    item = request("langflow", dataset, steps=steps, samples=17)
     command = LangFlowAdapter().render_command(item, run_dir(root, item), dry_run=True)
 
     assert command[1:3] == ["-B", "-u"]
@@ -216,23 +245,25 @@ def test_langflow_renders_the_pinned_inference_argparse_contract(tmp_path: Path)
     assert Path(override(command, "--downloads-manifest-path")) == (
         root / "data/manifests/downloads.json"
     )
-    assert override(command, "--dataset-id") == "owt"
+    assert override(command, "--dataset-id") == dataset
     assert Path(override(command, "--tokenizer-snapshot")) == (
         root
-        / "data/raw/huggingface/hub/models--gpt2/snapshots"
-        / "607a30d783dfa663caf39e06633721c8d4cfcd7e"
+        / "data/raw/huggingface/hub"
+        / f"models--{tokenizer_name}"
+        / "snapshots"
+        / tokenizer_revision
     )
     checkpoint = Path(option(command, "--checkpoint"))
-    assert checkpoint == root / "checkpoints/official/langflow/owt/model.safetensors"
+    assert checkpoint == root / f"checkpoints/official/langflow/{dataset}/model.safetensors"
     assert option(command, "--num_samples") == "17"
+    assert option(command, "--batch_size") == "1"
+    assert option(command, "--num_steps") == str(steps)
+    assert option(command, "--seq_length") == str(sequence_length)
+    assert option(command, "--seed") == "42"
+    assert Path(option(command, "--output")) == run_dir(root, item) / "upstream_samples.txt"
     assert not any(
         argument
         in {
-            "--batch_size",
-            "--num_steps",
-            "--seq_length",
-            "--seed",
-            "--output",
             "--num-samples",
             "--num-steps",
             "--seq-length",
@@ -241,10 +272,10 @@ def test_langflow_renders_the_pinned_inference_argparse_contract(tmp_path: Path)
     )
 
 
-def test_langflow_rejects_step_counts_not_exposed_by_pinned_inference(
+def test_langflow_accepts_many_step_grid_values(
     tmp_path: Path,
 ) -> None:
-    """Catch labeling fixed-step LangFlow samples as a different step budget."""
+    """Catch regressing LangFlow back to the fixed 1024-step-only cell."""
 
     root = prepare_conversion_root(tmp_path)
     entrypoint = root / "upstreams" / "langflow" / "inference.py"
@@ -252,27 +283,31 @@ def test_langflow_rejects_step_counts_not_exposed_by_pinned_inference(
     entrypoint.write_text("# fixture\n", encoding="utf-8")
     item = request("langflow", "owt", steps=32, samples=17)
 
-    with pytest.raises(AdapterError, match="invalid step count 32 for fixed_1024"):
-        LangFlowAdapter().render_command(item, run_dir(root, item), dry_run=True)
+    command = LangFlowAdapter().render_command(item, run_dir(root, item), dry_run=True)
+
+    assert option(command, "--num_steps") == "32"
 
 
-def test_rdlm_renders_the_official_sde_sampler_and_saved_asset_trio() -> None:
+def test_rdlm_renders_the_official_sde_sampler_and_saved_asset_trio(
+    tmp_path: Path,
+) -> None:
     """Catch RDLM bypassing its official Hydra sampler or omitting saved release assets."""
 
+    root = prepare_command_root(tmp_path)
     item = request("rdlm", "lm1b", steps=32, samples=17)
-    command = RDLMAdapter().render_command(item, run_dir(ROOT, item), dry_run=True)
-    asset_root = ROOT / "checkpoints/official/rdlm/lm1b/LM1B"
+    command = RDLMAdapter().render_command(item, run_dir(root, item), dry_run=True)
+    asset_root = root / "checkpoints/official/rdlm/lm1b/LM1B"
 
     assert command[1:3] == ["-B", "-u"]
-    assert Path(override(command, "--upstream-entrypoint")) == ROOT / "upstreams/rdlm/main.py"
+    assert Path(override(command, "--upstream-entrypoint")) == root / "upstreams/rdlm/main.py"
     assert override(command, "--capture-kind") == "rdlm"
-    assert Path(override(command, "--data-config-path")) == ROOT / "artifacts/data.yaml"
+    assert Path(override(command, "--data-config-path")) == root / "artifacts/data.yaml"
     assert Path(override(command, "--downloads-manifest-path")) == (
-        ROOT / "data/manifests/downloads.json"
+        root / "data/manifests/downloads.json"
     )
     assert override(command, "--dataset-id") == "lm1b"
     assert Path(override(command, "--tokenizer-snapshot")) == (
-        ROOT
+        root
         / "data/raw/huggingface/hub/models--bert-base-uncased/snapshots"
         / "86b5e0934494bd15c9632b12f734a8a67f723594"
     )
@@ -690,18 +725,17 @@ def test_rdlm_capture_routes_saved_assets_and_uses_bounded_exact_batches(
     assert "TRANSFORMERS_OFFLINE" not in os.environ
 
 
-def test_continuous_cli_dry_run_emits_two_commands_and_two_registry_rejections(
+def test_continuous_cli_dry_run_emits_three_commands_and_one_registry_rejection(
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Catch unsupported cells being substituted or dry-run trying to write artifacts."""
 
-    results_root = ROOT / "results"
-    assert not results_root.exists()
-
+    root = prepare_command_root(tmp_path)
     result = command_main(
         [
             "--root",
-            str(ROOT),
+            str(root),
             "--models",
             "langflow,rdlm",
             "--datasets",
@@ -716,11 +750,11 @@ def test_continuous_cli_dry_run_emits_two_commands_and_two_registry_rejections(
     supported = [record for record in records if record["status"] == "supported"]
     unsupported = [record for record in records if record["status"] == "unsupported"]
     assert {(record["model"], record["dataset"]) for record in supported} == {
+        ("langflow", "lm1b"),
         ("langflow", "owt"),
         ("rdlm", "lm1b"),
     }
     assert {(record["model"], record["dataset"]) for record in unsupported} == {
-        ("langflow", "lm1b"),
         ("rdlm", "owt"),
     }
     assert all(record["command"] for record in supported)
@@ -733,4 +767,3 @@ def test_continuous_cli_dry_run_emits_two_commands_and_two_registry_rejections(
     )
     rdlm_command = next(record["command"] for record in supported if record["model"] == "rdlm")
     assert override(rdlm_command, "sampling.batch_per_gpu") == "8"
-    assert not results_root.exists()

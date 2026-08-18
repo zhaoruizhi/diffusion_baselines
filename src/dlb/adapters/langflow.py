@@ -14,23 +14,19 @@ class LangFlowAdapter(BaseTeacherAdapter):
     upstream = "langflow"
     supported_models = frozenset({"langflow"})
     teacher_families = {"langflow": "continuous_langflow"}
-    batch_sizes = {("langflow", "owt"): 1}
+    batch_sizes = {("langflow", "lm1b"): 1, ("langflow", "owt"): 1}
 
     def render_command(
         self, request: RunRequest, run_dir: Path, *, dry_run: bool
     ) -> list[str]:
-        root, _, _ = self._validate_request(request, run_dir)
-        if request.step_count != 1024:
-            raise AdapterError(
-                "pinned LangFlow inference.py does not expose variable sampling steps; "
-                "only the official 1024-step inference contract can be labeled faithfully"
-            )
+        root, sequence_length, batch_size = self._validate_request(request, run_dir)
         checkpoint = self._resolve_checkpoint(root, request, dry_run=dry_run)
         entrypoint = root / "upstreams" / "langflow" / "inference.py"
         if not entrypoint.is_file() or entrypoint.is_symlink():
             raise AdapterError(f"pinned upstream entrypoint is missing or unsafe: {entrypoint}")
         checkpoint_path = checkpoint.path / "model.safetensors"
         capture_path = run_dir.resolve() / "upstream_token_ids.json"
+        upstream_output = run_dir.resolve() / "upstream_samples.txt"
         tokenizer_name = self._load_data_contract(root, request.dataset_id)["tokenizer"]
         tokenizer_revision = self._tokenizer_revision(root, tokenizer_name)
         tokenizer_snapshot = (
@@ -62,6 +58,16 @@ class LangFlowAdapter(BaseTeacherAdapter):
             str(checkpoint_path),
             "--num_samples",
             str(request.sample_count),
+            "--batch_size",
+            str(batch_size),
+            "--num_steps",
+            str(request.step_count),
+            "--seq_length",
+            str(sequence_length),
+            "--seed",
+            str(request.seed),
+            "--output",
+            str(upstream_output),
         ]
         self._validate_argv(arguments)
         return arguments

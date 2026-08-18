@@ -212,6 +212,10 @@ def test_known_primary_sources_and_immutable_hf_revisions_are_recorded(checkpoin
             "Continuous-Rivals-Discrete/langflow-owt",
             "a08f933dd337d52762fec5ef7d60c131896cc341",
         ),
+        "langflow_lm1b_hf": (
+            "Continuous-Rivals-Discrete/langflow-lm1b",
+            "d5d395d9bdf01f697ba8830110e3e78c63d77cb5",
+        ),
         "duo_owt_hf": ("s-sahoo/duo", "ef8ad7a25a4bf9624306230913dd7ae5cb2a00bd"),
         "duo_dcd_owt_hf": (
             "s-sahoo/duo-distilled",
@@ -445,7 +449,7 @@ def test_json_schema_accepts_recipes_and_rejects_them_on_unsupported_cells():
     assert list(validator.iter_errors(document)) == []
 
     invalid = copy.deepcopy(document)
-    invalid["models"]["langflow"]["datasets"]["lm1b"]["train_recipe"] = "bad"
+    invalid["models"]["rdlm"]["datasets"]["owt"]["train_recipe"] = "bad"
     assert list(validator.iter_errors(invalid))
 
 

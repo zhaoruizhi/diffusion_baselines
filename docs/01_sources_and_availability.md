@@ -19,7 +19,7 @@ bash scripts/fetch_sources.sh
 注册表 `configs/experiments.yaml` 是唯一的 coverage 来源：
 
 - `supported` cell 才会进入 generation matrix。
-- `langflow/lm1b` unsupported：没有完整公开 LM1B checkpoint/training release。
+- `langflow/lm1b` 和 `langflow/owt` 使用官方 Hugging Face checkpoint，并进入 many-step generation matrix。
 - `rdlm/owt` unsupported：官方 RDLM release 没有 OWT model。
 
 unsupported 不是失败，也不能使用另一个数据集或另一个 teacher 替代。矩阵生成后再次确认：

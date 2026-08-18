@@ -16,7 +16,7 @@ FIXED_1024_STEPS = [1024]
 MODEL_IDENTIFIERS = {
     "flm": ("many", "dlb-flm", "flm", "flm"),
     "fmlm": ("few", "dlb-flm", "flm", "flm"),
-    "langflow": ("fixed_1024", "dlb-langflow", "langflow", "langflow"),
+    "langflow": ("many", "dlb-langflow", "langflow", "langflow"),
     "duo": ("many", "dlb-duo", "duo", "duo"),
     "duo_dcd": ("few", "dlb-duo", "duo", "duo"),
     "mdlm": ("many", "dlb-mdlm", "mdlm", "mdlm"),

@@ -70,6 +70,20 @@ resources:
       repo_id: Continuous-Rivals-Discrete/langflow-owt
       revision: a08f933dd337d52762fec5ef7d60c131896cc341
       allow_patterns: [README.md, __init__.py, config.json, config.py, model.py, model.safetensors]
+  langflow_lm1b_hf:
+    id: langflow_lm1b_hf
+    backend: huggingface
+    provenance: official
+    teacher_family: continuous_langflow
+    destination: official/langflow/lm1b
+    license: apache-2.0
+    terms_url: https://huggingface.co/Continuous-Rivals-Discrete/langflow-lm1b
+    digest: {policy: capture_after_download}
+    required_files: [config.json, config.py, model.py, model.safetensors]
+    source:
+      repo_id: Continuous-Rivals-Discrete/langflow-lm1b
+      revision: d5d395d9bdf01f697ba8830110e3e78c63d77cb5
+      allow_patterns: [README.md, __init__.py, config.json, config.py, model.py, model.safetensors]
   duo_owt_hf:
     id: duo_owt_hf
     backend: huggingface
@@ -371,6 +385,7 @@ recipes:
     prerequisites: [flm_lm1b_reproductions]
     note: Task 12's repository wrapper must adapt the BERT masked teacher to the absorbing Di4C shape; Zenodo contains OWT students only.
 coverage:
+  - {model: langflow, dataset: lm1b, resource: langflow_lm1b_hf}
   - {model: langflow, dataset: owt, resource: langflow_owt_hf}
   - {model: duo, dataset: lm1b, resource: flm_lm1b_reproductions, path: lm1b_Duo.ckpt, teacher_family: uniform_duo}
   - {model: duo, dataset: owt, resource: duo_owt_hf}

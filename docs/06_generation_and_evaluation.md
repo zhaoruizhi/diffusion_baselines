@@ -66,7 +66,7 @@ timing 输出在 `results/timing/.../timing.json`，`seconds_per_sample` 是主�
 python scripts/aggregate_results.py --root "$DLB_ROOT"
 ```
 
-严格模式要求全部 130 个 supported task 都有 1,024 样本、三项质量指标、独立 timing 和匹配 provenance，输出：
+严格模式要求全部 137 个 supported task 都有 1,024 样本、三项质量指标、独立 timing 和匹配 provenance，输出：
 
 ```text
 results/summary/results_long.csv

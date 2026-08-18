@@ -11,7 +11,7 @@
 - 每个受支持配置生成 1,024 个样本，seed 固定为 42。
 - 质量指标：GPT-2 Large Generative PPL、平均 unigram entropy、Self-BLEU；主延迟指标：独立 CUDA timing 的 seconds/sample。
 
-130 个受支持 generation cell 会写入 `results/matrix/generation.tsv`。LangFlow/LM1B 和 RDLM/OWT 不会伪造任务，原因写入 `results/matrix/unsupported.tsv`。
+137 个受支持 generation cell 会写入 `results/matrix/generation.tsv`。RDLM/OWT 不会伪造任务，原因写入 `results/matrix/unsupported.tsv`。
 
 ## 服务器最短路径
 
@@ -32,7 +32,7 @@ export DLB_PYTHON="$CONDA_PREFIX/bin/python"
 "$DLB_PYTHON" -m pip install -e ".[dev,data,checkpoints]"
 ```
 
-然后严格按以下顺序执行：
+同步本仓库代码到 Linux GPU 服务器后，严格按以下顺序执行：
 
 ```bash
 bash scripts/fetch_sources.sh

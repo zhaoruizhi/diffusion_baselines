@@ -25,10 +25,10 @@ def registry():
 
 def test_matrix_cardinality_and_declared_steps(registry):
     tasks = build_matrix(registry)
-    assert len(tasks) == 124
-    assert sum(task.category == "many" for task in tasks) == 63
+    assert len(tasks) == 137
+    assert sum(task.category == "many" for task in tasks) == 77
     assert sum(task.category == "few" for task in tasks) == 60
-    assert sum(task.category == "fixed_1024" for task in tasks) == 1
+    assert sum(task.category == "fixed_1024" for task in tasks) == 0
     for task in tasks:
         assert task.steps in registry.step_grids[task.category]
         assert task.sample_count == 1024
@@ -44,7 +44,7 @@ def test_matrix_is_stably_sorted_and_round_trips_without_eval(registry, tmp_path
     restored = read_matrix(output)
     assert restored == tasks
     assert validate_matrix(output, registry) == tasks
-    assert len({task.task_id for task in restored}) == 124
+    assert len({task.task_id for task in restored}) == 137
     assert "eval(" not in content
 
 
@@ -61,11 +61,10 @@ def test_matrix_rejects_duplicate_task_ids(tmp_path, registry):
 def test_unsupported_inventory_is_not_expanded(registry, tmp_path):
     records = unsupported_inventory(registry)
     assert {(item["model"], item["dataset"]) for item in records} == {
-        ("langflow", "lm1b"),
         ("rdlm", "owt"),
     }
     assert all(item["reason"] for item in records)
     output = write_unsupported_inventory(tmp_path / "unsupported.tsv", records)
     lines = output.read_text(encoding="utf-8").splitlines()
     assert lines[0] == f"# schema={MATRIX_SCHEMA}-unsupported"
-    assert len(lines) == 4
+    assert len(lines) == 3
