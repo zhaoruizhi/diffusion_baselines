@@ -73,7 +73,7 @@ def prepare_conversion_root(tmp_path: Path) -> Path:
 def prepare_command_root(tmp_path: Path) -> Path:
     root = prepare_conversion_root(tmp_path)
     for relative in (
-        Path("upstreams/langflow/inference.py"),
+        Path("adapters/sample_langflow.py"),
         Path("upstreams/rdlm/main.py"),
     ):
         target = root / relative
@@ -232,6 +232,9 @@ def test_langflow_renders_the_pinned_inference_argparse_contract(
     """Catch flags that are not accepted by the pinned inference argparse parser."""
 
     root = prepare_conversion_root(tmp_path)
+    wrapper = root / "adapters" / "sample_langflow.py"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("# fixture\n", encoding="utf-8")
     entrypoint = root / "upstreams" / "langflow" / "inference.py"
     entrypoint.parent.mkdir(parents=True)
     entrypoint.write_text("# fixture\n", encoding="utf-8")
@@ -239,7 +242,7 @@ def test_langflow_renders_the_pinned_inference_argparse_contract(
     command = LangFlowAdapter().render_command(item, run_dir(root, item), dry_run=True)
 
     assert command[1:3] == ["-B", "-u"]
-    assert Path(override(command, "--upstream-entrypoint")) == entrypoint
+    assert Path(override(command, "--upstream-entrypoint")) == wrapper
     assert override(command, "--capture-kind") == "langflow"
     assert Path(override(command, "--data-config-path")) == root / "artifacts/data.yaml"
     assert Path(override(command, "--downloads-manifest-path")) == (
@@ -261,6 +264,7 @@ def test_langflow_renders_the_pinned_inference_argparse_contract(
     assert option(command, "--seq_length") == str(sequence_length)
     assert option(command, "--seed") == "42"
     assert Path(option(command, "--output")) == run_dir(root, item) / "upstream_samples.txt"
+    assert option(command, "--tokenizer") == tokenizer_name
     assert not any(
         argument
         in {
@@ -278,9 +282,9 @@ def test_langflow_accepts_many_step_grid_values(
     """Catch regressing LangFlow back to the fixed 1024-step-only cell."""
 
     root = prepare_conversion_root(tmp_path)
-    entrypoint = root / "upstreams" / "langflow" / "inference.py"
-    entrypoint.parent.mkdir(parents=True)
-    entrypoint.write_text("# fixture\n", encoding="utf-8")
+    wrapper = root / "adapters" / "sample_langflow.py"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("# fixture\n", encoding="utf-8")
     item = request("langflow", "owt", steps=32, samples=17)
 
     command = LangFlowAdapter().render_command(item, run_dir(root, item), dry_run=True)

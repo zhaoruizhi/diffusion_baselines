@@ -5,11 +5,12 @@ The adapter targets the read-only LangFlow checkout at commit
 code. The supported registry cells are LangFlow/LM1B and LangFlow/OWT; each
 cell binds its own official Hugging Face checkpoint and tokenizer contract.
 
-The pinned release's real entrypoint is `upstreams/langflow/inference.py`, not
-the Hydra `main.py` shape used by the Task 7 teachers. Its argparse options use
-underscores, so the adapter deliberately renders `--num_samples`,
-`--batch_size`, `--num_steps`, and `--seq_length` rather than the hyphenated
-flags in the older plan example. The remaining exact mapping is:
+The pinned release's public `upstreams/langflow/inference.py` hard-codes its
+bundled config directory, which is not dataset-safe for the LM1B and OWT
+checkpoint pair. The adapter therefore enters through
+`adapters/sample_langflow.py`: it imports the pinned upstream `LangFlow` model
+code, loads `LangFlowConfig` from the selected checkpoint directory, and keeps
+the upstream underscore-style argparse contract. The exact mapping is:
 
 - `--checkpoint`: immutable canonical
   `checkpoints/official/langflow/<dataset>/model.safetensors`
@@ -18,6 +19,7 @@ flags in the older plan example. The remaining exact mapping is:
 - `--seq_length`: canonical dataset length, 128 for LM1B and 1024 for OWT
 - `--seed`: request seed
 - `--output`: canonical `upstream_samples.txt` in the run directory
+- `--tokenizer`: canonical dataset tokenizer from `artifacts/data.yaml`
 
 The shared `dlb.adapters.capture` process observes the token tensor returned by
 the real `LangFlow.generate_samples` method and the text returned by the real

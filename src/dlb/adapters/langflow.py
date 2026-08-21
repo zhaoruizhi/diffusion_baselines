@@ -21,9 +21,9 @@ class LangFlowAdapter(BaseTeacherAdapter):
     ) -> list[str]:
         root, sequence_length, batch_size = self._validate_request(request, run_dir)
         checkpoint = self._resolve_checkpoint(root, request, dry_run=dry_run)
-        entrypoint = root / "upstreams" / "langflow" / "inference.py"
+        entrypoint = root / "adapters" / "sample_langflow.py"
         if not entrypoint.is_file() or entrypoint.is_symlink():
-            raise AdapterError(f"pinned upstream entrypoint is missing or unsafe: {entrypoint}")
+            raise AdapterError(f"LangFlow sampling wrapper is missing or unsafe: {entrypoint}")
         checkpoint_path = checkpoint.path / "model.safetensors"
         capture_path = run_dir.resolve() / "upstream_token_ids.json"
         upstream_output = run_dir.resolve() / "upstream_samples.txt"
@@ -68,6 +68,8 @@ class LangFlowAdapter(BaseTeacherAdapter):
             str(request.seed),
             "--output",
             str(upstream_output),
+            "--tokenizer",
+            tokenizer_name,
         ]
         self._validate_argv(arguments)
         return arguments

@@ -43,6 +43,7 @@ def _prepare_benchmark_root(tmp_path: Path) -> Path:
         Path("upstreams/rdlm/main.py"),
         Path("upstreams/sdtt/src/sdtt/main.py"),
         Path("upstreams/di4c/sdtt/src/sdtt/main.py"),
+        Path("adapters/sample_langflow.py"),
         Path("adapters/sample_sdtt.py"),
         Path("adapters/sample_di4c.py"),
     ):
