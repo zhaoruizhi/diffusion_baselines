@@ -668,10 +668,15 @@ def test_every_registry_cell_has_a_concrete_benchmark_command_or_structured_skip
 
     supported = [record for record in records if record["status"] == "supported"]
     skipped = [record for record in records if record["status"] == "unsupported"]
-    assert len(supported) == 21
+    errors = [record for record in records if record["status"] == "error"]
+    assert len(supported) == 20
     assert {(record["model"], record["dataset"]) for record in skipped} == {
         ("rdlm", "owt"),
     }
+    assert {(record["model"], record["dataset"]) for record in errors} == {
+        ("rdlm", "lm1b"),
+    }
+    assert "allowed: 1000,1024" in errors[0]["reason"]
     for record in supported:
         command = record["command"]
         assert isinstance(command, list) and command

@@ -25,12 +25,16 @@ def registry():
 
 def test_matrix_cardinality_and_declared_steps(registry):
     tasks = build_matrix(registry)
-    assert len(tasks) == 137
-    assert sum(task.category == "many" for task in tasks) == 77
+    assert len(tasks) == 132
+    assert sum(task.category == "many" for task in tasks) == 72
     assert sum(task.category == "few" for task in tasks) == 60
     assert sum(task.category == "fixed_1024" for task in tasks) == 0
+    assert [
+        task.steps for task in tasks if (task.model, task.dataset) == ("rdlm", "lm1b")
+    ] == [1000, 1024]
     for task in tasks:
-        assert task.steps in registry.step_grids[task.category]
+        model = registry.models[task.model]
+        assert task.steps in (model.step_override or registry.step_grids[task.category])
         assert task.sample_count == 1024
         assert task.seed == 42
 
@@ -44,7 +48,7 @@ def test_matrix_is_stably_sorted_and_round_trips_without_eval(registry, tmp_path
     restored = read_matrix(output)
     assert restored == tasks
     assert validate_matrix(output, registry) == tasks
-    assert len({task.task_id for task in restored}) == 137
+    assert len({task.task_id for task in restored}) == 132
     assert "eval(" not in content
 
 

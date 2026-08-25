@@ -70,7 +70,7 @@ def test_conditional_matrix_matches_supported_unconditional_tasks(registry, tmp_
         registry, root=tmp_path, protocol=load_protocol(ROOT / "configs/conditional.yaml")
     )
 
-    assert len(conditional) == len(ordinary) == 137
+    assert len(conditional) == len(ordinary) == 132
     assert [(task.model, task.dataset, task.steps) for task in conditional] == [
         (task.model, task.dataset, task.steps) for task in ordinary
     ]

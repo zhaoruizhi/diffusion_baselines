@@ -42,6 +42,8 @@ def test_registry_contains_full_scope(registry):
     assert registry.step_grids["many"] == [1, 2, 4, 8, 16, 32, 1024]
     assert registry.step_grids["few"] == [1, 2, 4, 8, 16, 32]
     assert registry.step_grids["fixed_1024"] == [1024]
+    assert registry.models["rdlm"].step_override == [1000, 1024]
+    assert registry.models["flm"].step_override is None
 
 
 def test_unsupported_cells_have_reason(registry):

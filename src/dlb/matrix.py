@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-from dlb.registry import ExperimentRegistry, load_registry
+from dlb.registry import ExperimentRegistry, load_registry, step_grid_for_model
 
 
 MATRIX_SCHEMA = "dlb-generation-matrix-v1"
@@ -102,7 +102,7 @@ def build_matrix(
         for dataset_id, support in model.datasets.items():
             if support.status != SUPPORTED_STATUS:
                 continue
-            for steps in registry.step_grids[model.category]:
+            for steps in step_grid_for_model(registry, model_id):
                 task_id = f"{model_id}-{dataset_id}-steps-{steps}"
                 sample_dir, metrics_path, timing_path = _task_paths(
                     root_path, model_id, dataset_id, steps

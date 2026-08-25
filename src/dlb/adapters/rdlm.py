@@ -78,6 +78,7 @@ class RDLMAdapter(BaseTeacherAdapter):
             f"--downloads-manifest-path={root / 'data' / 'manifests' / 'downloads.json'}",
             f"--dataset-id={request.dataset_id}",
             f"--tokenizer-snapshot={tokenizer_snapshot}",
+            *self._conditional_capture_flags(request),
             "--",
             "run_mode=sample",
             "server=sample",

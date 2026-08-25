@@ -23,6 +23,12 @@
         "required": ["category", "environment", "adapter", "source", "datasets"],
         "properties": {
           "category": {"enum": ["many", "few", "fixed_1024"]},
+          "step_override": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "integer", "minimum": 1}
+          },
           "environment": {"pattern": "^[a-z][a-z0-9-]*$"},
           "adapter": {"pattern": "^[a-z][a-z0-9-]*$"},
           "source": {"pattern": "^[a-z][a-z0-9-]*$"},

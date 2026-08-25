@@ -104,6 +104,7 @@ class Di4CAdapter(BaseTeacherAdapter):
             checkpoint.teacher_family,
             "--dataset",
             request.dataset_id,
+            *self._conditional_script_flags(request),
             "--offline",
             "true",
         ]

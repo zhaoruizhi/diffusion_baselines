@@ -16,6 +16,11 @@ import sys
 import threading
 from typing import Sequence
 
+from dlb.conditional_matrix import (
+    CONDITIONAL_MATRIX_COLUMNS,
+    CONDITIONAL_MATRIX_SCHEMA,
+    ConditionalMatrixTask,
+)
 from dlb.matrix import MatrixTask, read_matrix
 
 
@@ -27,7 +32,7 @@ SAFE_LOG_COMPONENT = re.compile(r"[^A-Za-z0-9_.-]+")
 
 @dataclass(frozen=True)
 class TaskResult:
-    task: MatrixTask
+    task: MatrixTask | ConditionalMatrixTask
     gpu: str
     exit_code: int
     stdout_log: Path
@@ -61,7 +66,7 @@ def _script(root: Path, name: str) -> str:
 
 
 def command_for_task(
-    task: MatrixTask,
+    task: MatrixTask | ConditionalMatrixTask,
     *,
     root: Path,
     stage: str,
@@ -70,23 +75,26 @@ def command_for_task(
 ) -> list[str]:
     """Return the argv for one matrix row and stage."""
 
+    conditional = getattr(task, "protocol", None) == "c64_zs_v1"
     if stage in {"smoke", "generate"}:
+        script = "run_conditional_one.sh" if conditional else "run_one.sh"
         command = [
             "bash",
-            _script(root, "run_one.sh"),
+            _script(root, script),
             "--model",
             task.model,
             "--dataset",
             task.dataset,
             "--steps",
             str(task.steps),
-            "--num-samples",
-            str(task.sample_count),
-            "--seed",
-            str(task.seed),
         ]
+        if conditional:
+            command.extend(["--seed", str(task.seed)])
+        else:
+            command.extend(["--num-samples", str(task.sample_count), "--seed", str(task.seed)])
         if stage == "smoke":
-            command.extend(["--results-root", str(root / "results" / "smoke")])
+            smoke_root = root / "results" / ("conditional/smoke" if conditional else "smoke")
+            command.extend(["--results-root", str(smoke_root)])
         return command
     if stage == "evaluate":
         eval_python = os.environ.get("DLB_EVAL_PYTHON")
@@ -103,7 +111,7 @@ def command_for_task(
         return [
             *command,
             "-m",
-            "evaluation.evaluate",
+            "evaluation.conditional_evaluate" if conditional else "evaluation.evaluate",
             "--root",
             str(root),
             "--samples",
@@ -118,7 +126,7 @@ def command_for_task(
     if stage == "benchmark":
         return [
             "bash",
-            _script(root, "benchmark_one.sh"),
+            _script(root, "benchmark_conditional_one.sh" if conditional else "benchmark_one.sh"),
             "--model",
             task.model,
             "--dataset",
@@ -244,7 +252,7 @@ def _write_failures(root: Path, stage: str, results: Sequence[TaskResult]) -> No
 
 
 def dry_run(
-    tasks: Sequence[MatrixTask],
+    tasks: Sequence[MatrixTask | ConditionalMatrixTask],
     *,
     root: Path,
     stage: str,
@@ -273,7 +281,7 @@ def dry_run(
 
 
 def run_tasks(
-    tasks: Sequence[MatrixTask],
+    tasks: Sequence[MatrixTask | ConditionalMatrixTask],
     *,
     root: Path,
     stage: str,
@@ -287,7 +295,7 @@ def run_tasks(
     print_lock = threading.Lock()
     results: list[TaskResult] = []
 
-    def run_with_gpu(task: MatrixTask) -> TaskResult:
+    def run_with_gpu(task: MatrixTask | ConditionalMatrixTask) -> TaskResult:
         gpu = gpu_queue.get()
         try:
             return _run_task(
@@ -320,6 +328,55 @@ def run_tasks(
     return 1 if any(result.exit_code != 0 for result in results) else 0
 
 
+def _read_conditional_matrix(path: Path) -> list[ConditionalMatrixTask]:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"conditional matrix TSV is missing or unsafe: {path}")
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        schema = handle.readline().rstrip("\r\n")
+        if schema != f"# schema={CONDITIONAL_MATRIX_SCHEMA}":
+            raise ValueError("conditional matrix TSV has an unsupported schema header")
+        reader = csv.DictReader(handle, delimiter="\t")
+        if tuple(reader.fieldnames or ()) != CONDITIONAL_MATRIX_COLUMNS:
+            raise ValueError("conditional matrix TSV columns do not match the canonical schema")
+        tasks: list[ConditionalMatrixTask] = []
+        for row_number, row in enumerate(reader, start=3):
+            if None in row or any(value is None for value in row.values()):
+                raise ValueError(f"conditional matrix TSV row {row_number} has missing fields")
+            try:
+                tasks.append(
+                    ConditionalMatrixTask(
+                        task_id=row["task_id"],
+                        category=row["category"],
+                        model=row["model"],
+                        dataset=row["dataset"],
+                        steps=int(row["steps"]),
+                        sample_count=2048,
+                        seed=int(row["seed"]),
+                        environment=row["environment"],
+                        adapter=row["adapter"],
+                        source=row["source"],
+                        provenance=row["provenance"],
+                        protocol="c64_zs_v1",
+                        conditioning_manifest=row["conditioning_manifest"],
+                        conditioning_manifest_sha256=row["conditioning_manifest_sha256"],
+                        sample_dir=row["sample_dir"],
+                        metrics_path=row["metrics_path"],
+                        timing_path=row["timing_path"],
+                    )
+                )
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(f"invalid conditional matrix TSV row {row_number}") from error
+    return tasks
+
+
+def read_any_matrix(path: Path) -> list[MatrixTask | ConditionalMatrixTask]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        schema = handle.readline().rstrip("\r\n")
+    if schema == f"# schema={CONDITIONAL_MATRIX_SCHEMA}":
+        return _read_conditional_matrix(path)
+    return read_matrix(path)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
@@ -337,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         gpu_list = active_gpus(parse_gpus(arguments.gpus), arguments.max_jobs)
     except ValueError as error:
         parser.error(str(error))
-    tasks = read_matrix(arguments.matrix)
+    tasks = read_any_matrix(arguments.matrix)
     if arguments.dry_run:
         return dry_run(
             tasks,

@@ -2,17 +2,40 @@
 
 from __future__ import annotations
 
+import argparse
+import csv
 from dataclasses import dataclass
+from dataclasses import asdict
+import os
 from pathlib import Path
 from typing import Literal
 
 from dlb.conditional_prompts import ConditionalProtocol, load_protocol, verify_prompts
 from dlb.io import sha256_file
 from dlb.matrix import build_matrix, unsupported_inventory, write_unsupported_inventory
-from dlb.registry import ExperimentRegistry
+from dlb.registry import ExperimentRegistry, load_registry
 
 
 CONDITIONAL_MATRIX_SCHEMA = "dlb-conditional-generation-matrix-v1"
+CONDITIONAL_MATRIX_COLUMNS = (
+    "task_id",
+    "category",
+    "model",
+    "dataset",
+    "steps",
+    "sample_count",
+    "seed",
+    "environment",
+    "adapter",
+    "source",
+    "provenance",
+    "protocol",
+    "conditioning_manifest",
+    "conditioning_manifest_sha256",
+    "sample_dir",
+    "metrics_path",
+    "timing_path",
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +71,10 @@ class ConditionalMatrixTask:
     @property
     def step_count(self) -> int:
         return self.steps
+
+    def row(self) -> dict[str, str]:
+        value = asdict(self)
+        return {key: str(value[key]) for key in CONDITIONAL_MATRIX_COLUMNS}
 
 
 def _root_path(root: Path | None) -> Path:
@@ -139,3 +166,72 @@ def write_conditional_unsupported_inventory(
     """Write unsupported cells with the conditional matrix schema header."""
 
     return write_unsupported_inventory(path, records, schema=CONDITIONAL_MATRIX_SCHEMA)
+
+
+def _validate_tasks(tasks: list[ConditionalMatrixTask]) -> None:
+    seen: set[str] = set()
+    previous: tuple[str, str, int] | None = None
+    for task in tasks:
+        if task.task_id in seen:
+            raise ValueError(f"duplicate conditional matrix task ID: {task.task_id}")
+        seen.add(task.task_id)
+        key = (task.model, task.dataset, task.steps)
+        if previous is not None and key < previous:
+            raise ValueError("conditional matrix tasks are not in stable order")
+        previous = key
+        if task.protocol != "c64_zs_v1" or task.sample_count != 2048:
+            raise ValueError("conditional matrix task has the wrong C64 protocol")
+        if task.steps <= 0:
+            raise ValueError("conditional matrix task steps must be positive")
+        if any("\t" in value or "\n" in value or "\r" in value for value in task.row().values()):
+            raise ValueError(f"conditional matrix task contains a control character: {task.task_id}")
+
+
+def write_conditional_matrix(path: Path, tasks: list[ConditionalMatrixTask]) -> Path:
+    """Write a deterministic, versioned TSV matrix for C64 conditional runs."""
+
+    path = Path(path).absolute()
+    _validate_tasks(tasks)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.partial")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(f"# schema={CONDITIONAL_MATRIX_SCHEMA}\n")
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=CONDITIONAL_MATRIX_COLUMNS,
+                delimiter="\t",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            for task in tasks:
+                writer.writerow(task.row())
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--unsupported-output", type=Path)
+    arguments = parser.parse_args(argv)
+    root = arguments.root.resolve()
+    registry = load_registry(root / "configs" / "experiments.yaml")
+    tasks = build_conditional_matrix(registry, root=root)
+    write_conditional_matrix(arguments.output, tasks)
+    write_conditional_unsupported_inventory(
+        arguments.unsupported_output or arguments.output.with_name("unsupported.tsv"),
+        conditional_unsupported_inventory(registry),
+    )
+    print(f"conditional_matrix={arguments.output} tasks={len(tasks)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
