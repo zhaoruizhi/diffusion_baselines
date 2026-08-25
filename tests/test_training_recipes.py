@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import types
 import importlib.util
 
 import pytest
@@ -196,6 +197,33 @@ def test_di4c_student_init_can_be_overridden_to_scratch() -> None:
 
     assert Path(launch.command[2]).name == "train_di4c.py"
     assert override(launch.command, "+dlb_student_init") == "scratch"
+
+
+def test_di4c_wrapper_registers_hydra_resolvers_before_composition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from adapters import train_di4c
+
+    registered = {}
+
+    class FakeOmegaConf:
+        @staticmethod
+        def register_new_resolver(name, resolver, *, replace=False):
+            registered[name] = (resolver, replace)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "omegaconf",
+        types.SimpleNamespace(OmegaConf=FakeOmegaConf),
+    )
+    train_di4c._register_omegaconf_resolvers()
+
+    assert set(registered) == {"cwd", "device_count", "div_up", "eval"}
+    assert all(replace for _, replace in registered.values())
+    assert registered["div_up"][0](5, 2) == 3
+    assert registered["eval"][0]("1 + 1") == 2
+    assert isinstance(registered["cwd"][0](), str)
+    assert isinstance(registered["device_count"][0](), int)
 
 
 @pytest.mark.parametrize(

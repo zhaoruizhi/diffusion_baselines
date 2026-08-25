@@ -29,6 +29,38 @@ def _student_init_mode(config: Any) -> str:
     return str(mode)
 
 
+def _eval_expression(expression: Any) -> Any:
+    return eval(str(expression), {"__builtins__": {}}, {})
+
+
+def _device_count() -> int:
+    try:
+        import torch
+    except ImportError:
+        return 0
+    return int(torch.cuda.device_count())
+
+
+def _register_omegaconf_resolvers() -> None:
+    from omegaconf import OmegaConf
+
+    resolvers = {
+        "cwd": lambda: str(Path.cwd()),
+        "device_count": _device_count,
+        "div_up": lambda numerator, denominator: (
+            int(numerator) + int(denominator) - 1
+        )
+        // int(denominator),
+        "eval": _eval_expression,
+    }
+    for name, resolver in resolvers.items():
+        try:
+            OmegaConf.register_new_resolver(name, resolver, replace=True)
+        except TypeError:
+            OmegaConf.clear_resolver(name)
+            OmegaConf.register_new_resolver(name, resolver)
+
+
 def _teacher_initialized_student(config: Any):
     from sdtt.loading_utils import get_diffusion
     from transformers import AutoTokenizer
@@ -88,9 +120,10 @@ def _patch_student_loader() -> None:
 
 
 def main() -> int:
+    _install_upstream_path()
+    _register_omegaconf_resolvers()
     import hydra
 
-    _install_upstream_path()
     _patch_student_loader()
     import sdtt.main as upstream_main
 
