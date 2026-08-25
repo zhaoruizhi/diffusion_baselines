@@ -276,6 +276,8 @@ def _checkpoint_inventory(root: Path, output: Path) -> list[dict[str, object]]:
         if not stat.S_ISREG(metadata.st_mode):
             continue
         if metadata.st_size <= 0:
+            if path.suffix == ".log":
+                continue
             raise ValueError(f"recipe checkpoint output contains an empty file: {path}")
         inventory.append(
             {

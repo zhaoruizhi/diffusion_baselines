@@ -8,15 +8,31 @@ from typing import Any
 
 
 _INIT_MODES = frozenset({"hf_small", "teacher", "scratch"})
+_EVAL_GLOBALS = {
+    "__builtins__": {},
+    "__import__": __import__,
+    "abs": abs,
+    "float": float,
+    "int": int,
+    "len": len,
+    "max": max,
+    "min": min,
+    "round": round,
+    "str": str,
+    "sum": sum,
+}
 
 
 def _install_upstream_path() -> Path:
     source = Path.cwd()
     sdtt_src = source / "sdtt" / "src"
-    if not (sdtt_src / "sdtt" / "main.py").is_file():
+    sdtt_package_root = sdtt_src / "sdtt"
+    if not (sdtt_package_root / "main.py").is_file():
         raise RuntimeError(f"Di4C SDTT source is missing: {sdtt_src}")
-    sys.path.insert(0, str(sdtt_src))
-    sys.path.insert(0, str(source))
+    for path in (source, sdtt_src, sdtt_package_root):
+        text = str(path)
+        if text not in sys.path:
+            sys.path.insert(0, text)
     return source
 
 
@@ -30,7 +46,7 @@ def _student_init_mode(config: Any) -> str:
 
 
 def _eval_expression(expression: Any) -> Any:
-    return eval(str(expression), {"__builtins__": {}}, {})
+    return eval(str(expression), _EVAL_GLOBALS, {})
 
 
 def _device_count() -> int:

@@ -222,8 +222,34 @@ def test_di4c_wrapper_registers_hydra_resolvers_before_composition(
     assert all(replace for _, replace in registered.values())
     assert registered["div_up"][0](5, 2) == 3
     assert registered["eval"][0]("1 + 1") == 2
+    assert registered["eval"][0]("len([1, 2, 3])") == 3
+    assert registered["eval"][0]("__import__('math').ceil(1.2)") == 2
     assert isinstance(registered["cwd"][0](), str)
     assert isinstance(registered["device_count"][0](), int)
+
+
+def test_di4c_wrapper_adds_original_script_directory_to_import_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from adapters import train_di4c
+
+    source = tmp_path / "upstreams" / "di4c"
+    package_root = source / "sdtt" / "src" / "sdtt"
+    package_root.mkdir(parents=True)
+    (package_root / "main.py").write_text("# fixture\n", encoding="utf-8")
+    monkeypatch.chdir(source)
+    before = list(sys.path)
+
+    try:
+        train_di4c._install_upstream_path()
+
+        assert str(package_root) in sys.path
+        assert sys.path.index(str(package_root)) < sys.path.index(
+            str(source / "sdtt" / "src")
+        )
+    finally:
+        sys.path[:] = before
 
 
 @pytest.mark.parametrize(

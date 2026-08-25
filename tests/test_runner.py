@@ -294,6 +294,44 @@ def test_runner_resolves_recipe_checkpoint_identity(tmp_path: Path) -> None:
     assert metadata["checkpoint_sha256"]
 
 
+def test_recipe_checkpoint_identity_ignores_empty_runtime_logs(tmp_path: Path) -> None:
+    """Catch successful recipe outputs being rejected because Hydra wrote empty logs."""
+
+    project_root = Path(__file__).parents[1]
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "artifacts").mkdir()
+    (tmp_path / "configs" / "experiments.yaml").write_text(
+        (project_root / "configs" / "experiments.yaml").read_text()
+    )
+    (tmp_path / "artifacts" / "checkpoints.yaml").write_text(
+        (project_root / "artifacts" / "checkpoints.yaml").read_text()
+    )
+    (tmp_path / "artifacts" / "source_lock.json").write_text(
+        json.dumps({"sources": {"candi": {"commit": "a" * 40}}})
+    )
+    output = tmp_path / "checkpoints" / "reference_reproduction" / "candi" / "owt"
+    output.mkdir(parents=True)
+    (output / "model.bin").write_bytes(b"model")
+    (output / "main.log").write_bytes(b"")
+    (output / "stdout.log").write_bytes(b"")
+    command = [sys.executable, "-c", "print('ok')"]
+    request = RunRequest(
+        run_id="candi-owt-steps-2",
+        model_id="candi",
+        dataset_id="owt",
+        step_count=2,
+        seed=42,
+        sample_count=2,
+        command=command,
+    )
+
+    result = run_experiment(request, tmp_path, adapter=FakeAdapter(command, make_records(2)))
+
+    metadata = json.loads((result.run_dir / "run_metadata.json").read_text())
+    assert metadata["checkpoint_lock_id"].startswith("recipe:candi_owt:")
+    assert metadata["checkpoint_sha256"]
+
+
 def test_runner_reruns_when_declared_adapter_identity_changes(tmp_path: Path) -> None:
     """Catch cache reuse after an adapter changes declared conversion semantics."""
 
