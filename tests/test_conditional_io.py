@@ -144,6 +144,68 @@ def test_writer_rejects_duplicate_schedule_entry_without_replacing_final(tmp_pat
     records[1024]["prompt_id"] = 1
 
     with pytest.raises(SampleValidationError, match="expected prompt/completion"):
-        write_conditional_samples_atomic(final, records, expected=2048)
+        write_conditional_samples_atomic(
+            final,
+            records,
+            expected=2048,
+            sequence_length=128,
+            vocab_size=30_522,
+        )
 
     assert final.read_text(encoding="utf-8") == "old\n"
+
+
+def test_validator_requires_all_schedule_records_when_expected_is_none(tmp_path: Path) -> None:
+    """Catch a partial conditional shard accepted when its caller omits expected."""
+
+    path = tmp_path / "conditional.jsonl"
+    path.write_text(json.dumps(conditional_records([(0, 0)])[0]) + "\n", encoding="utf-8")
+
+    with pytest.raises(SampleValidationError, match="expected 2 records, found 1"):
+        validate_conditional_samples(
+            path,
+            expected=None,
+            schedule=[(0, 0), (1, 0)],
+            sequence_length=128,
+            vocab_size=10,
+        )
+
+
+@pytest.mark.parametrize("operation", ["validate", "write"])
+def test_conditional_publication_requires_explicit_dataset_contract(
+    tmp_path: Path, operation: str
+) -> None:
+    """Catch accidental LM1B defaults used to validate an unspecified dataset artifact."""
+
+    path = tmp_path / "conditional.jsonl"
+    records = conditional_records([(0, 0)])
+    path.write_text(json.dumps(records[0]) + "\n", encoding="utf-8")
+
+    with pytest.raises(TypeError):
+        if operation == "validate":
+            validate_conditional_samples(path, expected=1, schedule=[(0, 0)])
+        else:
+            write_conditional_samples_atomic(path, records, expected=1, schedule=[(0, 0)])
+
+
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        [(0, 0), (0, 0)],
+        [(1024, 0)],
+        [(0, 5)],
+        [(0, 0), (1, 0), (0, 1), (1, 1), (0, 2)],
+    ],
+)
+def test_writer_rejects_noncanonical_custom_schedule(tmp_path: Path, schedule) -> None:
+    """Catch duplicate, out-of-range, or incomplete prompt/completion schedule definitions."""
+
+    with pytest.raises(ValueError, match="conditional schedule"):
+        write_conditional_samples_atomic(
+            tmp_path / "conditional.jsonl",
+            [],
+            expected=None,
+            schedule=schedule,
+            sequence_length=128,
+            vocab_size=10,
+        )

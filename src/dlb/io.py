@@ -228,7 +228,7 @@ def _conditional_contract(
     schedule: Sequence[tuple[int, int]] | None,
     sequence_length: int,
     vocab_size: int,
-) -> tuple[int | None, list[tuple[int, int]]]:
+) -> list[tuple[int, int]]:
     if expected is not None and (type(expected) is not int or expected < 0):
         raise ValueError("expected sample count must be a non-negative integer or None")
     if type(sequence_length) is not int or sequence_length not in {128, 1024}:
@@ -240,6 +240,8 @@ def _conditional_contract(
         raise ValueError(
             f"conditional schedule has {len(schedule_records)} entries, expected {expected}"
         )
+    if not schedule_records:
+        raise ValueError("conditional schedule must contain at least one completion-0 prompt")
     for index, entry in enumerate(schedule_records):
         if (
             not isinstance(entry, tuple)
@@ -248,7 +250,37 @@ def _conditional_contract(
             or type(entry[1]) is not int
         ):
             raise ValueError(f"conditional schedule entry {index} must be an (int, int) tuple")
-    return expected, schedule_records
+    quality_prompt_count = 0
+    while (
+        quality_prompt_count < len(schedule_records)
+        and schedule_records[quality_prompt_count][1] == 0
+    ):
+        if schedule_records[quality_prompt_count] != (quality_prompt_count, 0):
+            raise ValueError("conditional schedule quality prompts must be contiguous and unique")
+        quality_prompt_count += 1
+    if quality_prompt_count == 0 or quality_prompt_count > 1024:
+        raise ValueError("conditional schedule prompt count must be between 1 and 1024")
+    diversity_records = schedule_records[quality_prompt_count:]
+    if not diversity_records:
+        return schedule_records
+    diversity_prompt_count = 0
+    while (
+        diversity_prompt_count < len(diversity_records)
+        and diversity_records[diversity_prompt_count] == (diversity_prompt_count, 1)
+    ):
+        diversity_prompt_count += 1
+    if diversity_prompt_count == 0 or diversity_prompt_count > quality_prompt_count:
+        raise ValueError("conditional schedule diversity prompts must be a quality-prompt prefix")
+    if len(diversity_records) % diversity_prompt_count != 0:
+        raise ValueError("conditional schedule has an incomplete diversity completion group")
+    completions = len(diversity_records) // diversity_prompt_count + 1
+    if completions > 5:
+        raise ValueError("conditional schedule completions must be between 1 and 5")
+    if schedule_records != expected_conditional_schedule(
+        quality_prompt_count, diversity_prompt_count, completions
+    ):
+        raise ValueError("conditional schedule is noncanonical")
+    return schedule_records
 
 
 def _validate_conditional_record(
@@ -318,12 +350,12 @@ def validate_conditional_samples(
     *,
     expected: int | None = 2048,
     schedule: Sequence[tuple[int, int]] | None = None,
-    sequence_length: int = 128,
-    vocab_size: int = 30_522,
+    sequence_length: int,
+    vocab_size: int,
 ) -> int:
     """Stream and validate a fixed-prefix conditional sample JSONL artifact."""
 
-    expected, schedule_records = _conditional_contract(
+    schedule_records = _conditional_contract(
         expected=expected,
         schedule=schedule,
         sequence_length=sequence_length,
@@ -339,8 +371,8 @@ def validate_conditional_samples(
             vocab_size=vocab_size,
         )
         count = index + 1
-    if expected is not None and count != expected:
-        raise SampleCountError(f"expected {expected} records, found {count}")
+    if count != len(schedule_records):
+        raise SampleCountError(f"expected {len(schedule_records)} records, found {count}")
     return count
 
 
@@ -350,12 +382,12 @@ def write_conditional_samples_atomic(
     *,
     expected: int | None = 2048,
     schedule: Sequence[tuple[int, int]] | None = None,
-    sequence_length: int = 128,
-    vocab_size: int = 30_522,
+    sequence_length: int,
+    vocab_size: int,
 ) -> int:
     """Validate and atomically publish a fixed-prefix conditional JSONL artifact."""
 
-    expected, schedule_records = _conditional_contract(
+    schedule_records = _conditional_contract(
         expected=expected,
         schedule=schedule,
         sequence_length=sequence_length,
@@ -377,8 +409,8 @@ def write_conditional_samples_atomic(
         )
         serialized_records.append(record.model_dump(mode="json"))
     count = len(serialized_records)
-    if expected is not None and count != expected:
-        raise SampleCountError(f"expected {expected} records, found {count}")
+    if count != len(schedule_records):
+        raise SampleCountError(f"expected {len(schedule_records)} records, found {count}")
     return write_compact_jsonl_atomic(path, serialized_records)
 
 
