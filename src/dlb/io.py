@@ -8,9 +8,9 @@ import os
 from pathlib import Path
 import secrets
 import stat
-from typing import Iterable, Mapping
+from typing import Iterable, Iterator, Mapping, Sequence
 
-from dlb.schema import SampleRecord
+from dlb.schema import ConditionalSampleRecord, SampleRecord
 
 
 class SampleValidationError(ValueError):
@@ -19,6 +19,20 @@ class SampleValidationError(ValueError):
 
 class SampleCountError(SampleValidationError):
     """A JSONL sample artifact has a different number of records than requested."""
+
+
+def expected_conditional_schedule(
+    prompt_count: int = 1024,
+    diversity_prompt_count: int = 256,
+    completions: int = 5,
+) -> list[tuple[int, int]]:
+    """Return the canonical quality-then-diversity conditional sample schedule."""
+
+    return [(prompt, 0) for prompt in range(prompt_count)] + [
+        (prompt, completion)
+        for completion in range(1, completions)
+        for prompt in range(diversity_prompt_count)
+    ]
 
 
 def _ensure_safe_directory(path: Path) -> None:
@@ -199,6 +213,173 @@ def _sample_from_value(value: object, index: int) -> SampleRecord:
         return SampleRecord.model_validate(value)
     except Exception as error:
         raise SampleValidationError(f"record {index}: {error}") from error
+
+
+def _conditional_sample_from_value(value: object, index: int) -> ConditionalSampleRecord:
+    try:
+        return ConditionalSampleRecord.model_validate(value)
+    except Exception as error:
+        raise SampleValidationError(f"record {index}: {error}") from error
+
+
+def _conditional_contract(
+    *,
+    expected: int | None,
+    schedule: Sequence[tuple[int, int]] | None,
+    sequence_length: int,
+    vocab_size: int,
+) -> tuple[int | None, list[tuple[int, int]]]:
+    if expected is not None and (type(expected) is not int or expected < 0):
+        raise ValueError("expected sample count must be a non-negative integer or None")
+    if type(sequence_length) is not int or sequence_length not in {128, 1024}:
+        raise ValueError("conditional sequence_length must be 128 for LM1B or 1024 for OWT")
+    if type(vocab_size) is not int or vocab_size <= 0:
+        raise ValueError("conditional vocab_size must be a positive integer")
+    schedule_records = list(expected_conditional_schedule() if schedule is None else schedule)
+    if expected is not None and len(schedule_records) != expected:
+        raise ValueError(
+            f"conditional schedule has {len(schedule_records)} entries, expected {expected}"
+        )
+    for index, entry in enumerate(schedule_records):
+        if (
+            not isinstance(entry, tuple)
+            or len(entry) != 2
+            or type(entry[0]) is not int
+            or type(entry[1]) is not int
+        ):
+            raise ValueError(f"conditional schedule entry {index} must be an (int, int) tuple")
+    return expected, schedule_records
+
+
+def _validate_conditional_record(
+    record: ConditionalSampleRecord,
+    index: int,
+    *,
+    schedule: Sequence[tuple[int, int]],
+    sequence_length: int,
+    vocab_size: int,
+) -> None:
+    if record.sample_id != index:
+        raise SampleValidationError(
+            f"record {index}: expected sample_id {index}, found {record.sample_id}"
+        )
+    if index >= len(schedule):
+        raise SampleValidationError(f"record {index}: no expected prompt/completion schedule entry")
+    expected_prompt_completion = schedule[index]
+    observed_prompt_completion = (record.prompt_id, record.completion_id)
+    if observed_prompt_completion != expected_prompt_completion:
+        raise SampleValidationError(
+            f"record {index}: expected prompt/completion {expected_prompt_completion}, "
+            f"found {observed_prompt_completion}"
+        )
+    if len(record.full_token_ids) != sequence_length:
+        raise SampleValidationError(
+            f"record {index}: full_token_ids length {len(record.full_token_ids)} does not match "
+            f"sequence_length {sequence_length}"
+        )
+    for field in (
+        "prefix_token_ids",
+        "continuation_token_ids",
+        "reference_token_ids",
+        "full_token_ids",
+    ):
+        if any(token >= vocab_size for token in getattr(record, field)):
+            raise SampleValidationError(
+                f"record {index}: {field} contains a token outside vocabulary [0, {vocab_size - 1}]"
+            )
+
+
+def read_conditional_samples(path: Path) -> Iterator[ConditionalSampleRecord]:
+    """Stream strict conditional sample records from a JSONL artifact."""
+
+    _ensure_safe_directory(path.parent)
+    _require_regular_or_missing(path)
+    if not path.exists():
+        raise SampleValidationError(f"conditional sample file is missing: {path}")
+    try:
+        with path.open("r", encoding="utf-8", newline="") as sample_file:
+            for index, raw_line in enumerate(sample_file):
+                line_number = index + 1
+                if not raw_line.strip():
+                    raise SampleValidationError(f"record {index} (line {line_number}) is blank")
+                try:
+                    value = json.loads(raw_line, object_pairs_hook=_json_object_with_unique_keys)
+                except (json.JSONDecodeError, UnicodeDecodeError, SampleValidationError) as error:
+                    raise SampleValidationError(
+                        f"record {index} (line {line_number}) has malformed JSON: {error}"
+                    ) from error
+                yield _conditional_sample_from_value(value, index)
+    except UnicodeDecodeError as error:
+        raise SampleValidationError(f"conditional sample file is not UTF-8: {path}") from error
+
+
+def validate_conditional_samples(
+    path: Path,
+    *,
+    expected: int | None = 2048,
+    schedule: Sequence[tuple[int, int]] | None = None,
+    sequence_length: int = 128,
+    vocab_size: int = 30_522,
+) -> int:
+    """Stream and validate a fixed-prefix conditional sample JSONL artifact."""
+
+    expected, schedule_records = _conditional_contract(
+        expected=expected,
+        schedule=schedule,
+        sequence_length=sequence_length,
+        vocab_size=vocab_size,
+    )
+    count = 0
+    for index, record in enumerate(read_conditional_samples(path)):
+        _validate_conditional_record(
+            record,
+            index,
+            schedule=schedule_records,
+            sequence_length=sequence_length,
+            vocab_size=vocab_size,
+        )
+        count = index + 1
+    if expected is not None and count != expected:
+        raise SampleCountError(f"expected {expected} records, found {count}")
+    return count
+
+
+def write_conditional_samples_atomic(
+    path: Path,
+    records: Iterable[ConditionalSampleRecord | Mapping[str, object]],
+    *,
+    expected: int | None = 2048,
+    schedule: Sequence[tuple[int, int]] | None = None,
+    sequence_length: int = 128,
+    vocab_size: int = 30_522,
+) -> int:
+    """Validate and atomically publish a fixed-prefix conditional JSONL artifact."""
+
+    expected, schedule_records = _conditional_contract(
+        expected=expected,
+        schedule=schedule,
+        sequence_length=sequence_length,
+        vocab_size=vocab_size,
+    )
+    serialized_records: list[dict[str, object]] = []
+    for index, value in enumerate(records):
+        record = (
+            value
+            if isinstance(value, ConditionalSampleRecord)
+            else _conditional_sample_from_value(value, index)
+        )
+        _validate_conditional_record(
+            record,
+            index,
+            schedule=schedule_records,
+            sequence_length=sequence_length,
+            vocab_size=vocab_size,
+        )
+        serialized_records.append(record.model_dump(mode="json"))
+    count = len(serialized_records)
+    if expected is not None and count != expected:
+        raise SampleCountError(f"expected {expected} records, found {count}")
+    return write_compact_jsonl_atomic(path, serialized_records)
 
 
 def validate_samples(path: Path, expected: int | None = 1024) -> int:

@@ -1,15 +1,26 @@
 """Typed, serializable records produced by baseline runs."""
 
 import math
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StrictInt, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    StrictInt,
+    field_validator,
+    model_validator,
+)
 
 
 class StrictModel(BaseModel):
     """Base model that rejects fields not in the public artifact contract."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+NonNegativeToken = Annotated[StrictInt, Field(ge=0)]
 
 
 class SampleRecord(StrictModel):
@@ -32,6 +43,36 @@ class SampleRecord(StrictModel):
         if type(value) is not float or not math.isfinite(value) or value < 0:
             raise ValueError("generation_seconds must be a finite non-negative built-in float")
         return value
+
+
+class ConditionalSampleRecord(StrictModel):
+    """One fixed-prefix conditional sample publication record."""
+
+    sample_id: StrictInt = Field(ge=0)
+    prompt_id: StrictInt = Field(ge=0, le=1023)
+    completion_id: StrictInt = Field(ge=0, le=4)
+    source_index: StrictInt = Field(ge=0)
+    prefix_token_ids: list[NonNegativeToken]
+    continuation_token_ids: list[NonNegativeToken] = Field(min_length=1)
+    reference_token_ids: list[NonNegativeToken]
+    full_token_ids: list[NonNegativeToken] = Field(min_length=65)
+    prefix_text: str
+    continuation_text: str
+    reference_text: str
+    full_text: str
+    seed: StrictInt
+    generation_seconds: Annotated[FiniteFloat, Field(ge=0)]
+    prefix_exact_match: Literal[True]
+
+    @model_validator(mode="after")
+    def validate_slices(self) -> "ConditionalSampleRecord":
+        if len(self.prefix_token_ids) != 64 or len(self.reference_token_ids) != 64:
+            raise ValueError("prefix and reference must each contain 64 tokens")
+        if self.full_token_ids[:64] != self.prefix_token_ids:
+            raise ValueError("full token prefix differs from fixed prefix")
+        if self.full_token_ids[64:] != self.continuation_token_ids:
+            raise ValueError("continuation differs from full token suffix")
+        return self
 
 
 class RunMetadata(StrictModel):
