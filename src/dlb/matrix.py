@@ -151,7 +151,9 @@ def unsupported_inventory(registry: ExperimentRegistry) -> list[dict[str, str]]:
     return records
 
 
-def write_unsupported_inventory(path: Path, records: Iterable[dict[str, str]]) -> Path:
+def write_unsupported_inventory(
+    path: Path, records: Iterable[dict[str, str]], *, schema: str = MATRIX_SCHEMA
+) -> Path:
     """Write the explicit unsupported model/dataset inventory as TSV."""
 
     path = Path(path).absolute()
@@ -168,7 +170,7 @@ def write_unsupported_inventory(path: Path, records: Iterable[dict[str, str]]) -
     temporary = path.with_name(f".{path.name}.{os.getpid()}.partial")
     try:
         with temporary.open("w", encoding="utf-8", newline="") as handle:
-            handle.write(f"# schema={MATRIX_SCHEMA}-unsupported\n")
+            handle.write(f"# schema={schema}-unsupported\n")
             writer = csv.DictWriter(
                 handle, fieldnames=UNSUPPORTED_COLUMNS, delimiter="\t", lineterminator="\n"
             )

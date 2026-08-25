@@ -15,6 +15,8 @@ from collections.abc import Mapping
 
 import yaml
 
+from dlb.adapters.conditional_runtime import load_conditioning_batch, token_project_fn
+
 
 class TokenizerBinding:
     __slots__ = ("tokenizer_id", "revision", "snapshot")
@@ -370,6 +372,12 @@ def write_capture_atomic(
     num_steps: int,
     seq_len: int,
     sampler: str,
+    generation_mode: str = "unconditional",
+    conditioning_manifest: Path | None = None,
+    conditioning_manifest_sha256: str | None = None,
+    prompt_count: int | None = None,
+    diversity_prompt_count: int | None = None,
+    completions_per_diversity_prompt: int | None = None,
 ) -> None:
     """Sample exact batches, immediately move IDs to CPU, and atomically publish JSON."""
 
@@ -377,6 +385,8 @@ def write_capture_atomic(
         raise ValueError("sampling counts and lengths must be positive")
     if sampler != "ancestral":
         raise ValueError("distilled language baselines require ancestral sampling")
+    if generation_mode not in {"unconditional", "conditional_prefix"}:
+        raise ValueError(f"unsupported generation mode: {generation_mode!r}")
     output = output.absolute()
     if not output.is_absolute() or output.is_symlink():
         raise ValueError(f"output path is unsafe: {output}")
@@ -389,14 +399,53 @@ def write_capture_atomic(
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write('{"schema":"dlb-upstream-token-capture-v1","samples":[')
-            while written < sample_count:
+            if generation_mode == "conditional_prefix":
+                if (
+                    conditioning_manifest is None
+                    or conditioning_manifest_sha256 is None
+                    or prompt_count is None
+                    or diversity_prompt_count is None
+                    or completions_per_diversity_prompt is None
+                ):
+                    raise ValueError("conditional distilled sampling requires a prompt contract")
+                batches: list[tuple[int, int, int]] = []
+                for start in range(0, prompt_count, batch_size):
+                    batches.append((0, start, min(batch_size, prompt_count - start)))
+                for completion_id in range(1, completions_per_diversity_prompt):
+                    for start in range(0, diversity_prompt_count, batch_size):
+                        batches.append(
+                            (
+                                completion_id,
+                                start,
+                                min(batch_size, diversity_prompt_count - start),
+                            )
+                        )
+            else:
+                batches = [(-1, written, min(batch_size, sample_count - written)) for written in range(0, sample_count, batch_size)]
+            for completion_id, prompt_start, current in batches:
                 current = min(batch_size, sample_count - written)
-                result = model.sample(
-                    n_samples=current,
-                    num_steps=num_steps,
-                    seq_len=seq_len,
-                    sampler=sampler,
-                    verbose=False,
+                batch = None
+                project_fn = lambda value: value
+                if generation_mode == "conditional_prefix":
+                    batch = load_conditioning_batch(
+                        conditioning_manifest,
+                        conditioning_manifest_sha256,
+                        completion_id=completion_id,
+                        prompt_start=prompt_start,
+                        batch_size=current,
+                        device=str(model.device),
+                        vocab_size=len(tokenizer),
+                    )
+                    project_fn = token_project_fn(batch.prefix_token_ids)
+                result = project_fn(
+                    model.sample(
+                        n_samples=current,
+                        num_steps=num_steps,
+                        seq_len=seq_len,
+                        sampler=sampler,
+                        verbose=False,
+                        project_fn=project_fn,
+                    )
                 )
                 rows = result.detach().cpu().tolist()
                 if not isinstance(rows, list) or len(rows) != current:
@@ -404,15 +453,36 @@ def write_capture_atomic(
                 texts = list(tokenizer.batch_decode(rows))
                 if len(texts) != current:
                     raise ValueError("tokenizer returned the wrong decoded batch size")
-                for row, text in zip(rows, texts, strict=True):
+                for batch_index, (row, text) in enumerate(zip(rows, texts, strict=True)):
                     if not isinstance(row, list) or len(row) != seq_len:
                         raise ValueError("upstream sampler returned a noncanonical sequence")
                     if not isinstance(text, str) or not text.strip():
                         raise ValueError("upstream tokenizer returned empty text")
+                    payload = {"sample_id": written, "text": text, "token_ids": row}
+                    if batch is not None:
+                        prefix = batch.prefix_token_ids[batch_index].detach().cpu().tolist()
+                        reference = batch.reference_token_ids[batch_index].detach().cpu().tolist()
+                        if row[: len(prefix)] != prefix:
+                            raise ValueError("conditional sampler returned a prefix mismatch")
+                        payload.update(
+                            {
+                                "prompt_id": batch.prompt_ids[batch_index],
+                                "completion_id": completion_id,
+                                "source_index": batch.source_indices[batch_index],
+                                "prefix_token_ids": prefix,
+                                "reference_token_ids": reference,
+                                "full_token_ids": row,
+                                "prefix_text": tokenizer.decode(prefix),
+                                "continuation_text": tokenizer.decode(row[len(prefix) :]),
+                                "reference_text": tokenizer.decode(reference),
+                                "full_text": text,
+                                "prefix_exact_match": True,
+                            }
+                        )
                     if written:
                         handle.write(",")
                     json.dump(
-                        {"sample_id": written, "text": text, "token_ids": row},
+                        payload,
                         handle,
                         ensure_ascii=False,
                         separators=(",", ":"),
@@ -439,6 +509,12 @@ def benchmark_model(
     num_steps: int,
     seq_len: int,
     sampler: str,
+    generation_mode: str = "unconditional",
+    conditioning_manifest: Path | None = None,
+    conditioning_manifest_sha256: str | None = None,
+    prompt_count: int | None = None,
+    diversity_prompt_count: int | None = None,
+    completions_per_diversity_prompt: int | None = None,
 ):
     """Time the already-materialized student's real one-sample tensor callback."""
 
@@ -446,14 +522,30 @@ def benchmark_model(
         raise ValueError("distilled benchmark sampling arguments are invalid")
     from dlb.timing import benchmark_and_publish
 
+    project_fn = lambda value: value
+    if generation_mode == "conditional_prefix":
+        if conditioning_manifest is None or conditioning_manifest_sha256 is None:
+            raise ValueError("conditional benchmark requires a prompt manifest")
+        del prompt_count, diversity_prompt_count, completions_per_diversity_prompt
+        batch = load_conditioning_batch(
+            conditioning_manifest,
+            conditioning_manifest_sha256,
+            completion_id=0,
+            prompt_start=0,
+            batch_size=1,
+            device=str(model.device),
+            vocab_size=len(model.tokenizer),
+        )
+        project_fn = token_project_fn(batch.prefix_token_ids)
     return benchmark_and_publish(
-        lambda: model.sample(
+        lambda: project_fn(model.sample(
             n_samples=1,
             num_steps=num_steps,
             seq_len=seq_len,
             sampler=sampler,
             verbose=False,
-        ),
+            project_fn=project_fn,
+        )),
         model=model,
         output=output,
         metadata_path=metadata_path,

@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
-from typing import Iterable
+from typing import Iterable, Literal
 import uuid
 
 from dlb.adapters.base import AdapterError, BaseTeacherAdapter
@@ -22,9 +22,14 @@ from dlb.timing import _validate_metadata
 
 
 def _run_dir(root: Path, request: RunRequest) -> Path:
+    result_root = (
+        root / "results/conditional"
+        if request.generation_mode == "conditional_prefix"
+        else root / "results"
+    )
     return (
-        root
-        / "results/samples"
+        result_root
+        / "samples"
         / request.dataset_id
         / request.model_id
         / f"steps_{request.step_count}"
@@ -41,14 +46,21 @@ def _output_path(output_root: Path, request: RunRequest) -> Path:
     )
 
 
-def _request(model: str, dataset: str, steps: int, seed: int) -> RunRequest:
+def _request(
+    model: str,
+    dataset: str,
+    steps: int,
+    seed: int,
+    generation_mode: Literal["unconditional", "conditional_prefix"] = "unconditional",
+) -> RunRequest:
     return RunRequest(
         run_id=f"benchmark-{model}-{dataset}-steps-{steps}",
         model_id=model,
         dataset_id=dataset,
         step_count=steps,
         seed=seed,
-        sample_count=1,
+        sample_count=2048 if generation_mode == "conditional_prefix" else 1,
+        generation_mode=generation_mode,
     )
 
 
@@ -62,6 +74,7 @@ def render_benchmark_matrix(
     precision: str,
     output_root: Path,
     dry_run: bool,
+    generation_mode: Literal["unconditional", "conditional_prefix"] = "unconditional",
 ) -> list[dict[str, object]]:
     """Render every selected cell, preserving explicit unsupported records."""
 
@@ -99,7 +112,20 @@ def render_benchmark_matrix(
                 )
                 continue
             adapter = ADAPTERS[model_id]
-            request = _request(model_id, dataset_id, steps, seed)
+            request = _request(model_id, dataset_id, steps, seed, generation_mode)
+            if generation_mode == "conditional_prefix":
+                try:
+                    request, _ = _resolve_request(request, root, adapter)
+                except (OSError, ValueError) as error:
+                    records.append(
+                        {
+                            "status": "error",
+                            "model": model_id,
+                            "dataset": dataset_id,
+                            "reason": str(error),
+                        }
+                    )
+                    continue
             output = _output_path(output_root.resolve(), request)
             dry_attempt = "0" * 32
             staged_output = output.with_name(
@@ -142,6 +168,7 @@ def render_benchmark_matrix(
                     "output": str(output),
                     "staged_output": str(staged_output),
                     "metadata_path": str(metadata_path),
+                    "generation_mode": generation_mode,
                     "command": command,
                 }
             )
@@ -164,6 +191,21 @@ def _precision_policy_binding(
         "checkpoint_selection": request.checkpoint_selection,
         "adapter_identity": request.adapter_identity,
     }
+    if request.generation_mode == "conditional_prefix":
+        binding.update(
+            {
+                "generation_mode": request.generation_mode,
+                "conditioning_manifest": request.conditioning_manifest,
+                "conditioning_manifest_sha256": request.conditioning_manifest_sha256,
+                "conditioning_config_sha256": request.conditioning_config_sha256,
+                "prefix_length": request.prefix_length,
+                "evaluation_continuation_length": request.evaluation_continuation_length,
+                "prompt_count": request.prompt_count,
+                "diversity_prompt_count": request.diversity_prompt_count,
+                "completions_per_diversity_prompt": request.completions_per_diversity_prompt,
+                "completion_schedule": request.completion_schedule,
+            }
+        )
     selection = request.checkpoint_selection
     resource_id = selection.get("resource") if isinstance(selection, dict) else None
     if isinstance(resource_id, str):
@@ -231,6 +273,22 @@ def _metadata(
         "attempt_id": attempt_id,
         "precision_policy_binding": binding,
         **policy,
+        **(
+            {
+                "generation_mode": request.generation_mode,
+                "conditioning_manifest": request.conditioning_manifest,
+                "conditioning_manifest_sha256": request.conditioning_manifest_sha256,
+                "conditioning_config_sha256": request.conditioning_config_sha256,
+                "prefix_length": request.prefix_length,
+                "evaluation_continuation_length": request.evaluation_continuation_length,
+                "prompt_count": request.prompt_count,
+                "diversity_prompt_count": request.diversity_prompt_count,
+                "completions_per_diversity_prompt": request.completions_per_diversity_prompt,
+                "completion_schedule": request.completion_schedule,
+            }
+            if request.generation_mode == "conditional_prefix"
+            else {}
+        ),
     }
 
 
@@ -327,15 +385,27 @@ def run_timing_attempt(
 
 
 def execute_one(
-    *, root: Path, model: str, dataset: str, steps: int, seed: int, precision: str
+    *,
+    root: Path,
+    model: str,
+    dataset: str,
+    steps: int,
+    seed: int,
+    precision: str,
+    generation_mode: Literal["unconditional", "conditional_prefix"] = "unconditional",
 ) -> Path:
     """Resolve provenance, then execute one real sampler wrapper in this environment."""
 
     root = root.resolve()
-    request = _request(model, dataset, steps, seed)
+    request = _request(model, dataset, steps, seed, generation_mode)
     adapter: BaseTeacherAdapter = ADAPTERS[model]
     resolved, adapter = _resolve_request(request, root, adapter)
-    output = _output_path(root / "results/timing", resolved)
+    timing_root = (
+        root / "results/conditional/timing"
+        if generation_mode == "conditional_prefix"
+        else root / "results/timing"
+    )
+    output = _output_path(timing_root, resolved)
     attempt_id = uuid.uuid4().hex
     staged_output = output.with_name(f".{output.name}.{attempt_id}.staged.json")
     metadata_path = output.with_name(f".benchmark_metadata.{attempt_id}.json")
@@ -377,6 +447,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--steps", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--precision", choices=("author",), required=True)
+    parser.add_argument(
+        "--generation-mode",
+        choices=("unconditional", "conditional_prefix"),
+        default="unconditional",
+    )
     parser.add_argument("--dry-run", action="store_true")
     arguments = parser.parse_args(argv)
     if arguments.dry_run:
@@ -387,8 +462,13 @@ def main(argv: list[str] | None = None) -> int:
             steps=arguments.steps,
             seed=arguments.seed,
             precision=arguments.precision,
-            output_root=arguments.root / "results/timing",
+            output_root=(
+                arguments.root / "results/conditional/timing"
+                if arguments.generation_mode == "conditional_prefix"
+                else arguments.root / "results/timing"
+            ),
             dry_run=True,
+            generation_mode=arguments.generation_mode,
         )
         for record in records:
             print(json.dumps(record, sort_keys=True))
@@ -403,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
             steps=arguments.steps,
             seed=arguments.seed,
             precision=arguments.precision,
+            generation_mode=arguments.generation_mode,
         )
     except (KeyError, OSError, RuntimeError, ValueError) as error:
         parser.error(str(error))

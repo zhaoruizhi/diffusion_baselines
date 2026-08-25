@@ -47,6 +47,16 @@ def main(argv: list[str] | None = None) -> int:
         "--teacher-family", choices=("masked_mdlm", "uniform_duo"), required=True
     )
     parser.add_argument("--dataset", choices=("lm1b", "owt"), required=True)
+    parser.add_argument("--generation-mode", choices=("unconditional", "conditional_prefix"), default="unconditional")
+    parser.add_argument("--conditioning-manifest", type=Path)
+    parser.add_argument("--conditioning-manifest-sha256")
+    parser.add_argument("--conditioning-config-sha256")
+    parser.add_argument("--prefix-length", type=int)
+    parser.add_argument("--evaluation-continuation-length", type=int)
+    parser.add_argument("--prompt-count", type=int)
+    parser.add_argument("--diversity-prompt-count", type=int)
+    parser.add_argument("--completions-per-diversity-prompt", type=int)
+    parser.add_argument("--completion-schedule")
     parser.add_argument("--offline", type=parse_bool, required=True)
     parser.add_argument(
         "--allow-missing-embedded-config", type=parse_bool, default=False
@@ -112,6 +122,12 @@ def main(argv: list[str] | None = None) -> int:
                 num_steps=args.num_steps,
                 seq_len=args.seq_len,
                 sampler=args.sampler,
+                generation_mode=args.generation_mode,
+                conditioning_manifest=args.conditioning_manifest,
+                conditioning_manifest_sha256=args.conditioning_manifest_sha256,
+                prompt_count=args.prompt_count,
+                diversity_prompt_count=args.diversity_prompt_count,
+                completions_per_diversity_prompt=args.completions_per_diversity_prompt,
             )
         else:
             write_capture_atomic(
@@ -123,6 +139,12 @@ def main(argv: list[str] | None = None) -> int:
                 num_steps=args.num_steps,
                 seq_len=args.seq_len,
                 sampler=args.sampler,
+                generation_mode=args.generation_mode,
+                conditioning_manifest=args.conditioning_manifest,
+                conditioning_manifest_sha256=args.conditioning_manifest_sha256,
+                prompt_count=args.prompt_count,
+                diversity_prompt_count=args.diversity_prompt_count,
+                completions_per_diversity_prompt=args.completions_per_diversity_prompt,
             )
     return 0
 

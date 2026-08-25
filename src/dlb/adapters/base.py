@@ -15,7 +15,7 @@ from dlb.checkpoints import load_checkpoint_manifest
 from dlb.io import atomic_json_write, sha256_file
 from dlb.registry import load_registry, step_grid_for_model
 from dlb.runner import RunRequest, _resolve_checkpoint_provenance
-from dlb.schema import SampleRecord
+from dlb.schema import ConditionalSampleRecord, SampleRecord
 
 
 class AdapterError(ValueError):
@@ -108,7 +108,12 @@ class BaseTeacherAdapter:
     ) -> list[str]:
         """Inject timing into this adapter's real loaded-model sampler command."""
 
-        if request.sample_count != 1:
+        if request.generation_mode == "conditional_prefix":
+            if request.sample_count != 2048:
+                raise AdapterError(
+                    "conditional latency benchmark must bind the full 2048-sample schedule"
+                )
+        elif request.sample_count != 1:
             raise AdapterError("primary latency benchmark requires sample_count=1")
         if precision != "author":
             raise AdapterError("benchmark precision must use the pinned author policy")
@@ -157,6 +162,40 @@ class BaseTeacherAdapter:
         self._validate_argv(arguments)
         return arguments
 
+    def _conditional_capture_flags(self, request: RunRequest) -> list[str]:
+        """Return capture-wrapper key=value flags for conditional requests."""
+
+        if request.generation_mode == "unconditional":
+            return []
+        required = {
+            "--generation-mode": request.generation_mode,
+            "--conditioning-manifest": request.conditioning_manifest,
+            "--conditioning-manifest-sha256": request.conditioning_manifest_sha256,
+            "--conditioning-config-sha256": request.conditioning_config_sha256,
+            "--prefix-length": request.prefix_length,
+            "--evaluation-continuation-length": request.evaluation_continuation_length,
+            "--prompt-count": request.prompt_count,
+            "--diversity-prompt-count": request.diversity_prompt_count,
+            "--completions-per-diversity-prompt": request.completions_per_diversity_prompt,
+            "--completion-schedule": request.completion_schedule,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise AdapterError(
+                "conditional request is missing adapter fields: " + ", ".join(missing)
+            )
+        return [f"{name}={value}" for name, value in required.items()]
+
+    def _conditional_script_flags(self, request: RunRequest) -> list[str]:
+        """Return argparse-style flag/value pairs for conditional script wrappers."""
+
+        capture_flags = self._conditional_capture_flags(request)
+        arguments: list[str] = []
+        for flag in capture_flags:
+            name, _, value = flag.partition("=")
+            arguments.extend([name, value])
+        return arguments
+
     def render_command(
         self, request: RunRequest, run_dir: Path, *, dry_run: bool
     ) -> list[str]:
@@ -178,6 +217,7 @@ class BaseTeacherAdapter:
             "dlb.adapters.capture",
             f"--upstream-entrypoint={entrypoint}",
             f"--capture-path={capture_path}",
+            *self._conditional_capture_flags(request),
             "--",
             "mode=sample_eval",
             f"seed={request.seed}",
@@ -202,7 +242,9 @@ class BaseTeacherAdapter:
 
     def convert_outputs(
         self, request: RunRequest, run_dir: Path
-    ) -> Iterable[SampleRecord]:
+    ) -> Iterable[SampleRecord | ConditionalSampleRecord]:
+        if request.generation_mode == "conditional_prefix":
+            return self._convert_conditional_capture_outputs(request, run_dir)
         root, sequence_length, batch_size = self._validate_conversion_request(
             request, run_dir
         )
@@ -289,9 +331,11 @@ class BaseTeacherAdapter:
         run_dir: Path,
         *,
         retokenize_inexact_rows: bool = False,
-    ) -> Iterable[SampleRecord]:
+    ) -> Iterable[SampleRecord | ConditionalSampleRecord]:
         """Convert an exact project capture produced around a pinned sampler."""
 
+        if request.generation_mode == "conditional_prefix":
+            return self._convert_conditional_capture_outputs(request, run_dir)
         root, sequence_length, _ = self._validate_conversion_request(request, run_dir)
         self._require_conversion_provenance(root, request)
         capture_path = run_dir.resolve() / "upstream_token_ids.json"
@@ -358,6 +402,86 @@ class BaseTeacherAdapter:
                 "checkpoint_lock_id": request.checkpoint_lock_id,
                 "checkpoint_selection": request.checkpoint_selection,
                 "teacher_family": request.checkpoint_teacher_family,
+                "generation_seconds_source": "unavailable_excluded_sentinel",
+                "generation_seconds_sentinel": 0.0,
+                "exclude_from_latency": True,
+            },
+        )
+        return records
+
+    def _convert_conditional_capture_outputs(
+        self, request: RunRequest, run_dir: Path
+    ) -> Iterable[ConditionalSampleRecord]:
+        """Convert a prompt-enriched capture into conditional sample records."""
+
+        root, sequence_length, _ = self._validate_conversion_request(request, run_dir)
+        self._require_conversion_provenance(root, request)
+        capture_path = run_dir.resolve() / "upstream_token_ids.json"
+        capture = self._read_conditional_capture(capture_path, request.sample_count)
+        dataset = self._load_data_contract(root, request.dataset_id)
+        tokenizer_name = dataset["tokenizer"]
+        vocab_size = self._TOKENIZER_VOCAB_SIZES[tokenizer_name]
+        records: list[ConditionalSampleRecord] = []
+        for index, item in enumerate(capture):
+            full = item["full_token_ids"]
+            prefix = item["prefix_token_ids"]
+            reference = item["reference_token_ids"]
+            if not isinstance(full, list) or not isinstance(prefix, list) or not isinstance(reference, list):
+                raise AdapterError(f"conditional capture record {index} has invalid token fields")
+            if len(full) != sequence_length:
+                raise AdapterError(
+                    f"conditional capture record {index} has {len(full)} full tokens, "
+                    f"expected {sequence_length}"
+                )
+            if any(
+                type(token) is not int or token < 0 or token >= vocab_size
+                for token in [*full, *prefix, *reference]
+            ):
+                raise AdapterError(f"conditional capture record {index} has token outside vocabulary")
+            if full[: len(prefix)] != prefix:
+                raise AdapterError(f"conditional capture record {index} has prefix mismatch")
+            continuation = full[len(prefix) :]
+            records.append(
+                ConditionalSampleRecord(
+                    sample_id=index,
+                    prompt_id=item["prompt_id"],
+                    completion_id=item["completion_id"],
+                    source_index=item["source_index"],
+                    prefix_token_ids=prefix,
+                    continuation_token_ids=continuation,
+                    reference_token_ids=reference,
+                    full_token_ids=full,
+                    prefix_text=str(item.get("prefix_text") or " ".join(map(str, prefix))),
+                    continuation_text=str(item.get("continuation_text") or " ".join(map(str, continuation))),
+                    reference_text=str(item.get("reference_text") or " ".join(map(str, reference))),
+                    full_text=str(item.get("full_text") or item.get("text") or " ".join(map(str, full))),
+                    seed=request.seed,
+                    generation_seconds=0.0,
+                    prefix_exact_match=True,
+                )
+            )
+        atomic_json_write(
+            run_dir.resolve() / "conversion_metadata.json",
+            {
+                "format": "dlb-conditional-token-capture-v1",
+                "upstream_output": str(capture_path),
+                "generated_samples": len(records),
+                "requested_samples": request.sample_count,
+                "trimmed_samples": 0,
+                "trim_policy": "none_exact_conditional_schedule",
+                "token_ids_source": "upstream_conditional_capture",
+                "tokenizer": tokenizer_name,
+                "tokenizer_revision": self._tokenizer_revision(root, tokenizer_name),
+                "checkpoint_sha256": request.checkpoint_sha256,
+                "checkpoint_lock_id": request.checkpoint_lock_id,
+                "checkpoint_selection": request.checkpoint_selection,
+                "teacher_family": request.checkpoint_teacher_family,
+                "conditioning_implementation": (
+                    "native_projection"
+                    if request.model_id in {"candi", "rdlm", "mdlm_sdtt", "mdlm_di4c", "duo_di4c"}
+                    else "zero_shot_runtime_projection"
+                ),
+                "paper_conditional_training_reproduced": False,
                 "generation_seconds_source": "unavailable_excluded_sentinel",
                 "generation_seconds_sentinel": 0.0,
                 "exclude_from_latency": True,
@@ -734,6 +858,68 @@ class BaseTeacherAdapter:
             seen.add(sample_id)
             if sample_id != index:
                 raise AdapterError(f"expected sample_id {index}, found {sample_id}")
+            normalized.append(item)
+        return normalized
+
+    def _read_conditional_capture(
+        self, path: Path, expected: int
+    ) -> list[dict[str, object]]:
+        value = self._read_json(path, "conditional token capture")
+        required = {
+            "sample_id",
+            "text",
+            "token_ids",
+            "prompt_id",
+            "completion_id",
+            "source_index",
+            "prefix_token_ids",
+            "reference_token_ids",
+            "full_token_ids",
+            "prefix_exact_match",
+        }
+        optional = {
+            "prefix_text",
+            "continuation_text",
+            "reference_text",
+            "full_text",
+        }
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"schema", "samples"}
+            or value.get("schema") != "dlb-upstream-token-capture-v1"
+            or not isinstance(value.get("samples"), list)
+        ):
+            raise AdapterError("unexpected conditional capture format")
+        samples = value["samples"]
+        if len(samples) != expected:
+            raise AdapterError(
+                f"expected {expected} conditional samples, found {len(samples)}"
+            )
+        seen: set[int] = set()
+        normalized: list[dict[str, object]] = []
+        for index, item in enumerate(samples):
+            if not isinstance(item, dict):
+                raise AdapterError(f"unexpected conditional capture record at index {index}")
+            keys = set(item)
+            if not required.issubset(keys) or keys - required - optional:
+                raise AdapterError(
+                    f"unexpected conditional capture record format at index {index}"
+                )
+            sample_id = item["sample_id"]
+            if type(sample_id) is not int:
+                raise AdapterError(f"invalid sample_id at index {index}")
+            if sample_id in seen:
+                raise AdapterError(f"duplicate sample_id {sample_id}")
+            seen.add(sample_id)
+            if sample_id != index:
+                raise AdapterError(f"expected sample_id {index}, found {sample_id}")
+            if item["prefix_exact_match"] is not True:
+                raise AdapterError(f"conditional prefix mismatch at sample {index}")
+            for field in ("prompt_id", "completion_id", "source_index"):
+                if type(item[field]) is not int or item[field] < 0:
+                    raise AdapterError(
+                        f"conditional capture record {index} has invalid {field}"
+                    )
             normalized.append(item)
         return normalized
 

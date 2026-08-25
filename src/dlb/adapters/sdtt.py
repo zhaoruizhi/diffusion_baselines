@@ -89,6 +89,7 @@ class SDTTAdapter(BaseTeacherAdapter):
             "7",
             "--teacher-family",
             checkpoint.teacher_family,
+            *self._conditional_script_flags(request),
             "--offline",
             "true",
         ]

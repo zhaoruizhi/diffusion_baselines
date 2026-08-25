@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import builtins
 from contextlib import contextmanager
+from contextlib import ExitStack
+from contextlib import nullcontext
 from dataclasses import dataclass
 import importlib
 import importlib.util
@@ -19,6 +21,15 @@ from typing import Callable
 import yaml
 
 from dlb.io import atomic_json_write
+from dlb.adapters.conditional_runtime import (
+    clamp_token_prefix,
+    embedding_project_fn,
+    load_conditioning_batch,
+    patched_attribute,
+    rdlm_project_fn,
+    token_project_fn,
+    vocab_project_fn,
+)
 from dlb.timing import benchmark_and_publish
 
 
@@ -37,6 +48,16 @@ class CaptureInvocation:
     benchmark_output: Path | None = None
     benchmark_metadata: Path | None = None
     benchmark_precision: str | None = None
+    generation_mode: str = "unconditional"
+    conditioning_manifest: Path | None = None
+    conditioning_manifest_sha256: str | None = None
+    conditioning_config_sha256: str | None = None
+    prefix_length: int | None = None
+    evaluation_continuation_length: int | None = None
+    prompt_count: int | None = None
+    diversity_prompt_count: int | None = None
+    completions_per_diversity_prompt: int | None = None
+    completion_schedule: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +88,16 @@ def _split_arguments(argv: list[str]) -> tuple[CaptureInvocation, list[str]]:
         "--benchmark-output",
         "--benchmark-metadata",
         "--benchmark-precision",
+        "--generation-mode",
+        "--conditioning-manifest",
+        "--conditioning-manifest-sha256",
+        "--conditioning-config-sha256",
+        "--prefix-length",
+        "--evaluation-continuation-length",
+        "--prompt-count",
+        "--diversity-prompt-count",
+        "--completions-per-diversity-prompt",
+        "--completion-schedule",
     }
     values: dict[str, str] = {}
     for argument in wrapper:
@@ -150,6 +181,45 @@ def _split_arguments(argv: list[str]) -> tuple[CaptureInvocation, list[str]]:
         raise ValueError(f"{kind} capture requires an expected sample count")
     if kind == "rdlm" and (saved_config_path is None or saved_sde_path is None):
         raise ValueError("RDLM capture requires saved config and SDE paths")
+    generation_mode = values.get("--generation-mode", "unconditional")
+    if generation_mode not in {"unconditional", "conditional_prefix"}:
+        raise ValueError(f"unsupported generation mode: {generation_mode!r}")
+    conditioning_manifest = (
+        Path(values["--conditioning-manifest"])
+        if "--conditioning-manifest" in values
+        else None
+    )
+
+    def optional_int(name: str) -> int | None:
+        text = values.get(name)
+        if text is None:
+            return None
+        try:
+            parsed = int(text)
+        except ValueError as error:
+            raise ValueError(f"{name} must be an integer") from error
+        if parsed < 0:
+            raise ValueError(f"{name} must be non-negative")
+        return parsed
+
+    conditional_fields = (
+        conditioning_manifest,
+        values.get("--conditioning-manifest-sha256"),
+        values.get("--conditioning-config-sha256"),
+        optional_int("--prefix-length"),
+        optional_int("--evaluation-continuation-length"),
+        optional_int("--prompt-count"),
+        optional_int("--diversity-prompt-count"),
+        optional_int("--completions-per-diversity-prompt"),
+        values.get("--completion-schedule"),
+    )
+    if generation_mode == "conditional_prefix":
+        if any(field is None for field in conditional_fields):
+            raise ValueError("conditional capture requires the full conditioning contract")
+        if conditioning_manifest is None or not conditioning_manifest.is_absolute():
+            raise ValueError("conditional manifest path must be absolute")
+    elif any(field is not None for field in conditional_fields):
+        raise ValueError("unconditional capture must not include conditional fields")
     tokenizer_fields = (
         data_config_path,
         downloads_manifest_path,
@@ -173,6 +243,16 @@ def _split_arguments(argv: list[str]) -> tuple[CaptureInvocation, list[str]]:
             benchmark_output=benchmark_output,
             benchmark_metadata=benchmark_metadata,
             benchmark_precision=benchmark_precision,
+            generation_mode=generation_mode,
+            conditioning_manifest=conditioning_manifest,
+            conditioning_manifest_sha256=values.get("--conditioning-manifest-sha256"),
+            conditioning_config_sha256=values.get("--conditioning-config-sha256"),
+            prefix_length=optional_int("--prefix-length"),
+            evaluation_continuation_length=optional_int("--evaluation-continuation-length"),
+            prompt_count=optional_int("--prompt-count"),
+            diversity_prompt_count=optional_int("--diversity-prompt-count"),
+            completions_per_diversity_prompt=optional_int("--completions-per-diversity-prompt"),
+            completion_schedule=values.get("--completion-schedule"),
         ),
         forwarded,
     )
@@ -361,9 +441,12 @@ def _write_capture(
     texts: list[object],
     token_rows: list[object],
     expected: int | None,
+    extras: list[dict[str, object]] | None = None,
 ) -> None:
     if len(texts) != len(token_rows):
         raise ValueError("upstream token and text sample counts differ")
+    if extras is not None and len(extras) != len(token_rows):
+        raise ValueError("upstream conditional metadata and token sample counts differ")
     if expected is not None and len(texts) != expected:
         raise ValueError(f"expected {expected} captured samples, found {len(texts)}")
     samples: list[dict[str, object]] = []
@@ -372,7 +455,10 @@ def _write_capture(
             raise ValueError(f"captured text {index} is not a string")
         if not isinstance(tokens, list):
             raise ValueError(f"captured token row {index} is not a list")
-        samples.append({"sample_id": index, "text": text, "token_ids": tokens})
+        payload = {"sample_id": index, "text": text, "token_ids": tokens}
+        if extras is not None:
+            payload.update(extras[index])
+        samples.append(payload)
     atomic_json_write(path, {"schema": "dlb-upstream-token-capture-v1", "samples": samples})
 
 
@@ -432,6 +518,133 @@ def _capture_teacher(
     original = owner.restore_model_and_sample
     captured: list[dict[str, object]] = []
 
+    def current_conditioning_batch(self):
+        if invocation.generation_mode != "conditional_prefix":
+            return None
+        if (
+            invocation.conditioning_manifest is None
+            or invocation.conditioning_manifest_sha256 is None
+            or invocation.prompt_count is None
+            or invocation.diversity_prompt_count is None
+            or invocation.completions_per_diversity_prompt is None
+        ):
+            raise ValueError("conditional capture invocation is incomplete")
+        offset = len(captured)
+        if offset < invocation.prompt_count:
+            completion_id = 0
+            prompt_start = offset
+            limit = invocation.prompt_count
+        else:
+            diversity_offset = offset - invocation.prompt_count
+            completion_id = diversity_offset // invocation.diversity_prompt_count + 1
+            prompt_start = diversity_offset % invocation.diversity_prompt_count
+            limit = invocation.diversity_prompt_count
+        if completion_id >= invocation.completions_per_diversity_prompt:
+            raise ValueError("conditional capture schedule is exhausted")
+        batch_size = int(getattr(self.config.loader, "eval_batch_size"))
+        current = min(batch_size, limit - prompt_start)
+        if current != batch_size:
+            raise ValueError("conditional batch size crosses a schedule boundary")
+        vocab_size = int(getattr(self, "vocab_size", 0) or len(self.tokenizer))
+        return load_conditioning_batch(
+            invocation.conditioning_manifest,
+            invocation.conditioning_manifest_sha256,
+            completion_id=completion_id,
+            prompt_start=prompt_start,
+            batch_size=batch_size,
+            device=str(self.device),
+            vocab_size=vocab_size,
+        )
+
+    def install_conditioning(self, batch):
+        if batch is None:
+            return ExitStack()
+        family = invocation.entrypoint.parent.name
+        stack = ExitStack()
+        if family == "mdlm":
+            project = token_project_fn(batch.prefix_token_ids)
+            if hasattr(self, "_sample_prior"):
+                original_prior = self._sample_prior
+
+                def prior(*args, **kwargs):
+                    return project(original_prior(*args, **kwargs).to(self.device))
+
+                stack.enter_context(patched_attribute(self, "_sample_prior", prior))
+            for name in ("_ddpm_update", "_ddpm_caching_update", "_analytic_update", "_denoiser_update"):
+                original_update = getattr(self, name, None)
+                if not callable(original_update):
+                    continue
+
+                def update(*args, __original=original_update, **kwargs):
+                    if "x" in kwargs:
+                        kwargs["x"] = project(kwargs["x"])
+                    elif args:
+                        args = (project(args[0]), *args[1:])
+                    output = __original(*args, **kwargs)
+                    if isinstance(output, tuple):
+                        return (*output[:-1], project(output[-1]))
+                    return project(output)
+
+                stack.enter_context(patched_attribute(self, name, update))
+        elif family == "duo":
+            project = token_project_fn(batch.prefix_token_ids)
+            if hasattr(self, "prior_sample"):
+                original_prior = self.prior_sample
+
+                def prior(*args, **kwargs):
+                    return project(original_prior(*args, **kwargs).to(self.device))
+
+                stack.enter_context(patched_attribute(self, "prior_sample", prior))
+            for name in ("_ancestral_update", "_analytic_update", "_denoiser_update"):
+                original_update = getattr(self, name, None)
+                if not callable(original_update):
+                    continue
+
+                def update(*args, __original=original_update, **kwargs):
+                    if "x" in kwargs:
+                        kwargs["x"] = project(kwargs["x"])
+                    elif args:
+                        args = (project(args[0]), *args[1:])
+                    output = __original(*args, **kwargs)
+                    if isinstance(output, tuple):
+                        return (*output[:-1], project(output[-1]))
+                    return project(output)
+
+                stack.enter_context(patched_attribute(self, name, update))
+        elif family == "flm":
+            project = vocab_project_fn(batch.prefix_token_ids)
+            if hasattr(self, "prior_sample"):
+                original_prior = self.prior_sample
+
+                def prior(*args, **kwargs):
+                    return project(original_prior(*args, **kwargs).to(self.device))
+
+                stack.enter_context(patched_attribute(self, "prior_sample", prior))
+            original_forward = self.forward
+
+            def forward(*args, **kwargs):
+                if "xt" in kwargs:
+                    kwargs["xt"] = project(kwargs["xt"])
+                elif args:
+                    args = (project(args[0]), *args[1:])
+                return original_forward(*args, **kwargs)
+
+            stack.enter_context(patched_attribute(self, "forward", forward))
+        elif family == "candi":
+            original_generate = self.generate_samples
+
+            def generate(*args, **kwargs):
+                import torch
+
+                kwargs["prompt_tokens"] = batch.prefix_token_ids
+                kwargs["prompt_mask"] = torch.ones_like(batch.prefix_token_ids, dtype=torch.bool)
+                return original_generate(*args, **kwargs)
+
+            stack.enter_context(patched_attribute(self, "generate_samples", generate))
+        else:
+            raise ValueError(f"unsupported conditional teacher family: {family}")
+        return stack
+
     def capture(self, *args, **kwargs):
         if invocation.benchmark_output is not None:
             num_steps = kwargs.get("num_steps", args[0] if args else None)
@@ -469,15 +682,42 @@ def _capture_teacher(
                     self.noise.train()
                 else:
                     self._train_mode()
-        result = original(self, *args, **kwargs)
+        batch = current_conditioning_batch(self)
+        with install_conditioning(self, batch):
+            result = original(self, *args, **kwargs)
+        if batch is not None:
+            if isinstance(result, list) and result and all(hasattr(row, "shape") for row in result):
+                import torch
+
+                result = torch.stack(result)
+            result = clamp_token_prefix(result, batch.prefix_token_ids)
         token_rows = _rows(result, label="teacher sampler")
         text_rows = list(self.tokenizer.batch_decode(result))
         if len(token_rows) != len(text_rows):
             raise ValueError("upstream token and text batch sizes differ")
-        for tokens, text in zip(token_rows, text_rows):
-            captured.append(
-                {"sample_id": len(captured), "text": text, "token_ids": tokens}
-            )
+        for batch_index, (tokens, text) in enumerate(zip(token_rows, text_rows)):
+            payload = {"sample_id": len(captured), "text": text, "token_ids": tokens}
+            if batch is not None:
+                prefix = batch.prefix_token_ids[batch_index].detach().cpu().tolist()
+                reference = batch.reference_token_ids[batch_index].detach().cpu().tolist()
+                if tokens[: len(prefix)] != prefix:
+                    raise ValueError("conditional sampler returned a prefix mismatch")
+                payload.update(
+                    {
+                        "prompt_id": batch.prompt_ids[batch_index],
+                        "completion_id": batch.completion_id,
+                        "source_index": batch.source_indices[batch_index],
+                        "prefix_token_ids": prefix,
+                        "reference_token_ids": reference,
+                        "full_token_ids": tokens,
+                        "prefix_text": self.tokenizer.decode(prefix),
+                        "continuation_text": self.tokenizer.decode(tokens[len(prefix) :]),
+                        "reference_text": self.tokenizer.decode(reference),
+                        "full_text": text,
+                        "prefix_exact_match": True,
+                    }
+                )
+            captured.append(payload)
         return result
 
     owner.restore_model_and_sample = capture
@@ -502,23 +742,80 @@ def _capture_langflow(
     original_generate = owner.generate_samples
     token_rows: list[object] = []
     texts: list[object] = []
+    conditional_extras: list[dict[str, object]] = []
 
     def generate(self, *args, **kwargs):
-        if invocation.benchmark_output is None:
-            result = original_generate(self, *args, **kwargs)
-        else:
-            benchmark_kwargs = dict(kwargs)
-            benchmark_kwargs["num_samples"] = 1
-            result = benchmark_and_publish(
-                lambda: original_generate(self, *args, **benchmark_kwargs),
-                model=self,
-                output=invocation.benchmark_output,
-                metadata_path=invocation.benchmark_metadata,
-                precision=invocation.benchmark_precision,
+        conditioning = None
+        project_embeddings = None
+        original_forward = None
+        if invocation.generation_mode == "conditional_prefix":
+            if invocation.conditioning_manifest is None or invocation.conditioning_manifest_sha256 is None:
+                raise ValueError("LangFlow conditional capture requires a prompt manifest")
+            batch_size = int(kwargs.get("num_samples", 1))
+            conditioning = load_conditioning_batch(
+                invocation.conditioning_manifest,
+                invocation.conditioning_manifest_sha256,
+                completion_id=0 if len(token_rows) < (invocation.prompt_count or 0) else (len(token_rows) - (invocation.prompt_count or 0)) // (invocation.diversity_prompt_count or 1) + 1,
+                prompt_start=len(token_rows) if len(token_rows) < (invocation.prompt_count or 0) else (len(token_rows) - (invocation.prompt_count or 0)) % (invocation.diversity_prompt_count or 1),
+                batch_size=batch_size,
+                device=str(next(self.parameters()).device),
+                vocab_size=int(self.config.vocab_size),
             )
+            import torch
+
+            clean_one_hot = torch.nn.functional.one_hot(
+                conditioning.prefix_token_ids, num_classes=int(self.config.vocab_size)
+            ).to(dtype=next(self.parameters()).dtype, device=conditioning.prefix_token_ids.device)
+            clean_embeddings = self._embed_tokens(clean_one_hot)
+            project_embeddings = embedding_project_fn(clean_embeddings)
+            original_forward = self.forward
+
+            def forward(*args, **kwargs):
+                if "noisy_embeds" in kwargs and kwargs["noisy_embeds"] is not None:
+                    kwargs["noisy_embeds"] = project_embeddings(kwargs["noisy_embeds"])
+                if "x_self_cond" in kwargs and kwargs["x_self_cond"] is not None:
+                    kwargs["x_self_cond"] = project_embeddings(kwargs["x_self_cond"])
+                return original_forward(*args, **kwargs)
+
+        with (
+            patched_attribute(self, "forward", forward)
+            if project_embeddings is not None and original_forward is not None
+            else nullcontext()
+        ):
+            if invocation.benchmark_output is None:
+                result = original_generate(self, *args, **kwargs)
+            else:
+                benchmark_kwargs = dict(kwargs)
+                benchmark_kwargs["num_samples"] = 1
+                result = benchmark_and_publish(
+                    lambda: original_generate(self, *args, **benchmark_kwargs),
+                    model=self,
+                    output=invocation.benchmark_output,
+                    metadata_path=invocation.benchmark_metadata,
+                    precision=invocation.benchmark_precision,
+                )
+        if conditioning is not None:
+            result = clamp_token_prefix(result, conditioning.prefix_token_ids)
         rows = result.detach().cpu().tolist()
         if not isinstance(rows, list):
             raise ValueError("LangFlow sampler returned invalid token rows")
+        if conditioning is not None:
+            for batch_index, row in enumerate(rows):
+                prefix = conditioning.prefix_token_ids[batch_index].detach().cpu().tolist()
+                reference = conditioning.reference_token_ids[batch_index].detach().cpu().tolist()
+                if row[: len(prefix)] != prefix:
+                    raise ValueError("LangFlow conditional sampler returned a prefix mismatch")
+                conditional_extras.append(
+                    {
+                        "prompt_id": conditioning.prompt_ids[batch_index],
+                        "completion_id": conditioning.completion_id,
+                        "source_index": conditioning.source_indices[batch_index],
+                        "prefix_token_ids": prefix,
+                        "reference_token_ids": reference,
+                        "full_token_ids": row,
+                        "prefix_exact_match": True,
+                    }
+                )
         token_rows.extend(rows)
         return result
 
@@ -546,12 +843,17 @@ def _capture_langflow(
     owner.generate_samples = generate
     module.AutoTokenizer = AutoTokenizerProxy
     with _offline_huggingface():
-        _run_main(module, invocation.entrypoint, forwarded, hydra_config_path=False)
+        parameters = inspect.signature(_run_main).parameters
+        if "hydra_config_path" in parameters:
+            _run_main(module, invocation.entrypoint, forwarded, hydra_config_path=False)
+        else:
+            _run_main(module, invocation.entrypoint, forwarded)
     _write_capture(
         invocation.capture_path,
         texts,
         token_rows,
         invocation.expected_samples,
+        conditional_extras if invocation.generation_mode == "conditional_prefix" else None,
     )
 
 
@@ -652,10 +954,12 @@ def _capture_rdlm(
     original_sampling_factory = (
         run_sample.sampling.get_sampling_fn
         if invocation.benchmark_output is not None
+        or invocation.generation_mode == "conditional_prefix"
         else None
     )
     texts: list[object] = []
     token_rows: list[object] = []
+    conditional_extras: list[dict[str, object]] = []
     saved_config_used = False
     saved_sde_opened = False
     saved_sde_used = False
@@ -706,19 +1010,141 @@ def _capture_rdlm(
         del iterable
         return original_tqdm(range(sample_batches), *args, **kwargs)
 
-    def benchmark_sampling_factory(*args, **kwargs):
+    def rdlm_conditioning_batch(batch_index: int, device: str):
+        if invocation.generation_mode != "conditional_prefix":
+            return None
+        if (
+            invocation.conditioning_manifest is None
+            or invocation.conditioning_manifest_sha256 is None
+            or invocation.prompt_count is None
+            or invocation.diversity_prompt_count is None
+            or invocation.completions_per_diversity_prompt is None
+        ):
+            raise ValueError("RDLM conditional capture invocation is incomplete")
+        offset = batch_index * batch_size
+        if offset < invocation.prompt_count:
+            completion_id = 0
+            prompt_start = offset
+            limit = invocation.prompt_count
+        else:
+            diversity_offset = offset - invocation.prompt_count
+            completion_id = diversity_offset // invocation.diversity_prompt_count + 1
+            prompt_start = diversity_offset % invocation.diversity_prompt_count
+            limit = invocation.diversity_prompt_count
+        if completion_id >= invocation.completions_per_diversity_prompt:
+            raise ValueError("RDLM conditional capture schedule is exhausted")
+        if min(batch_size, limit - prompt_start) != batch_size:
+            raise ValueError("RDLM conditional batch size crosses a schedule boundary")
+        original_tokens = OmegaConf.select(saved_config, "original_tokens")
+        if type(original_tokens) is not int or original_tokens <= 0:
+            raise ValueError("saved RDLM config does not declare original_tokens")
+        return load_conditioning_batch(
+            invocation.conditioning_manifest,
+            invocation.conditioning_manifest_sha256,
+            completion_id=completion_id,
+            prompt_start=prompt_start,
+            batch_size=batch_size,
+            device=device,
+            vocab_size=original_tokens,
+        )
+
+    def sampling_factory(*args, **kwargs):
         if original_sampling_factory is None:
             raise ValueError("RDLM benchmark sampling factory is unavailable")
+        device = kwargs.get("device", args[4] if len(args) > 4 else "cpu")
+        active_project = None
+        batch_index = 0
+        if invocation.generation_mode == "conditional_prefix":
+            kwargs = dict(kwargs)
+
+            def project(state):
+                return state if active_project is None else active_project(state)
+
+            kwargs["proj_fn"] = project
         sampling_fn = original_sampling_factory(*args, **kwargs)
-        return _rdlm_benchmark_sampling_fn(sampling_fn, invocation)
+        sampling_fn = _rdlm_benchmark_sampling_fn(sampling_fn, invocation)
+
+        def sample(model: object) -> object:
+            nonlocal active_project, batch_index
+            batch = rdlm_conditioning_batch(batch_index, str(device))
+            if batch is not None:
+                token_size = OmegaConf.select(saved_config, "tokens")
+                original_tokens = OmegaConf.select(saved_config, "original_tokens")
+                if (
+                    type(token_size) is not int
+                    or token_size <= 1
+                    or type(original_tokens) is not int
+                    or original_tokens <= 0
+                ):
+                    raise ValueError("saved RDLM config has invalid base token contract")
+                digits_per_token = math.ceil(math.log(original_tokens) / math.log(token_size))
+                active_project = rdlm_project_fn(
+                    batch.prefix_token_ids,
+                    base=token_size,
+                    digits_per_token=digits_per_token,
+                )
+                for row_index in range(batch.prefix_token_ids.shape[0]):
+                    conditional_extras.append(
+                        {
+                            "prompt_id": batch.prompt_ids[row_index],
+                            "completion_id": batch.completion_id,
+                            "source_index": batch.source_indices[row_index],
+                            "prefix_token_ids": batch.prefix_token_ids[row_index]
+                            .detach()
+                            .cpu()
+                            .tolist(),
+                            "reference_token_ids": batch.reference_token_ids[row_index]
+                            .detach()
+                            .cpu()
+                            .tolist(),
+                        }
+                    )
+                batch_index += 1
+            try:
+                return sampling_fn(model)
+            finally:
+                active_project = None
+
+        return sample
 
     def capture_shift_factory(*args, **kwargs):
         shift = original_shift_factory(*args, **kwargs)
+        tokenizer_object = args[2] if len(args) >= 3 else kwargs.get("tokenizer")
 
         def capture_shift(samples):
             sentences, shifted = shift(samples)
             texts[:] = list(sentences)
             token_rows[:] = _rows(shifted)
+            if invocation.generation_mode == "conditional_prefix":
+                if len(conditional_extras) < len(token_rows):
+                    raise ValueError("RDLM conditional metadata is shorter than generated samples")
+                for index, row in enumerate(token_rows):
+                    prefix = conditional_extras[index]["prefix_token_ids"]
+                    reference = conditional_extras[index]["reference_token_ids"]
+                    if not isinstance(prefix, list) or row[: len(prefix)] != prefix:
+                        raise ValueError("RDLM conditional sampler returned a prefix mismatch")
+                    conditional_extras[index].update(
+                        {
+                            "full_token_ids": row,
+                            "prefix_exact_match": True,
+                            "prefix_text": (
+                                tokenizer_object.decode(prefix)
+                                if tokenizer_object is not None
+                                else " ".join(map(str, prefix))
+                            ),
+                            "continuation_text": (
+                                tokenizer_object.decode(row[len(prefix) :])
+                                if tokenizer_object is not None
+                                else " ".join(map(str, row[len(prefix) :]))
+                            ),
+                            "reference_text": (
+                                tokenizer_object.decode(reference)
+                                if tokenizer_object is not None
+                                else " ".join(map(str, reference))
+                            ),
+                            "full_text": texts[index],
+                        }
+                    )
             return sentences, shifted
 
         return capture_shift
@@ -736,8 +1162,8 @@ def _capture_rdlm(
     data_module.AutoTokenizer = locked_tokenizer_proxy(original_auto_tokenizer)
     run_sample.open = routed_open
     run_sample.tqdm = exact_sample_batches
-    if invocation.benchmark_output is not None:
-        run_sample.sampling.get_sampling_fn = benchmark_sampling_factory
+    if original_sampling_factory is not None:
+        run_sample.sampling.get_sampling_fn = sampling_factory
     run_sample.instantiate = instantiate
     run_sample.sutils.find_bos_and_shift_fn = capture_shift_factory
     module.mp.spawn = inline_spawn
@@ -756,6 +1182,9 @@ def _capture_rdlm(
         texts[:expected],
         token_rows[:expected],
         expected,
+        conditional_extras[:expected]
+        if invocation.generation_mode == "conditional_prefix"
+        else None,
     )
 
 

@@ -676,7 +676,7 @@ def test_every_registry_cell_has_a_concrete_benchmark_command_or_structured_skip
     assert [(record["model"], record["dataset"]) for record in errors] == [
         ("rdlm", "lm1b")
     ]
-    assert "invalid step count 32" in errors[0]["reason"]
+    assert "allowed: 1000,1024" in errors[0]["reason"]
     for record in supported:
         command = record["command"]
         assert isinstance(command, list) and command

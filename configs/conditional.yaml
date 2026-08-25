@@ -1,0 +1,14 @@
+schema_version: 1
+protocol: c64_zs_v1
+selection_seed: 42
+sampling_seed: 42
+prompt_count: 1024
+prefix_length: 64
+evaluation_continuation_length: 64
+diversity_prompt_count: 256
+completions_per_diversity_prompt: 5
+datasets:
+  lm1b:
+    model_length: 128
+  owt:
+    model_length: 1024

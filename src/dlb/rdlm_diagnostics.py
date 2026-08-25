@@ -302,8 +302,8 @@ def _ppl_nonmonotonic(rows: Sequence[Mapping[str, Any]]) -> bool:
     ]
     if len(values) < 3:
         return False
-    nondecreasing = all(a <= b for a, b in zip(values, values[1:], strict=True))
-    nonincreasing = all(a >= b for a, b in zip(values, values[1:], strict=True))
+    nondecreasing = all(a <= b for a, b in zip(values, values[1:]))
+    nonincreasing = all(a >= b for a, b in zip(values, values[1:]))
     return not nondecreasing and not nonincreasing
 
 

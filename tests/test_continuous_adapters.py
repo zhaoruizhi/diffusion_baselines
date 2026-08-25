@@ -764,7 +764,7 @@ def test_continuous_cli_dry_run_emits_valid_commands_and_step_override_rejection
     assert [(record["model"], record["dataset"]) for record in errors] == [
         ("rdlm", "lm1b")
     ]
-    assert "invalid step count 32" in errors[0]["reason"]
+    assert "allowed: 1000,1024" in errors[0]["reason"]
     assert all(record["command"] for record in supported)
     assert all(record["reason"] for record in unsupported)
     assert all(
