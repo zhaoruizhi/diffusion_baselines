@@ -140,6 +140,7 @@ def _patch_student_loader() -> None:
 
         mode = _student_init_mode(config)
         if mode == "hf_small":
+            kwargs.pop("student_as_teacher", None)
             if kwargs:
                 raise TypeError(
                     f"unexpected load_small_student keyword(s): {sorted(kwargs)}"

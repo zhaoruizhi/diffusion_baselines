@@ -300,7 +300,12 @@ def test_di4c_hf_small_student_init_preserves_configured_teacher(
     train_di4c._patch_student_loader()
     config = {"dlb_student_init": "hf_small"}
 
-    result = fake_sdtt.load_small_student(loss="kld", round=7, config=config)
+    result = fake_sdtt.load_small_student(
+        loss="kld",
+        round=7,
+        config=config,
+        student_as_teacher=True,
+    )
 
     assert result == {"source": "direct-hf-small-loader"}
     assert calls == [
