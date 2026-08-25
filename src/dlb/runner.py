@@ -338,6 +338,10 @@ def _completion_schedule_text(prompt_count: int, diversity_prompt_count: int, co
     return f"c0:p0-{prompt_count - 1};c1-{completions - 1}:p0-{diversity_prompt_count - 1}"
 
 
+def _conditioning_sidecar_path(root: Path, dataset_id: str) -> Path:
+    return root / "data" / "manifests" / f"conditional-{dataset_id}-c64.json"
+
+
 def _resolve_conditional_request(request: RunRequest, root: Path) -> dict[str, object]:
     """Verify prompt/data bindings and derive the only publishable C64 contract."""
 
@@ -357,7 +361,9 @@ def _resolve_conditional_request(request: RunRequest, root: Path) -> dict[str, o
         or manifest.model_length != protocol.datasets[request.dataset_id].model_length
     ):
         raise ValueError("verified conditional prompt manifest differs from protocol")
-    manifest_path = (root / manifest.prompt_file).resolve()
+    sidecar_path = _conditioning_sidecar_path(root, request.dataset_id)
+    if sidecar_path.is_symlink() or not sidecar_path.is_file():
+        raise ValueError(f"conditional prompt manifest is missing or unsafe: {sidecar_path}")
     config_sha256 = sha256_file(config_path)
     schedule = expected_conditional_schedule(
         protocol.prompt_count,
@@ -370,8 +376,8 @@ def _resolve_conditional_request(request: RunRequest, root: Path) -> dict[str, o
         protocol.completions_per_diversity_prompt,
     )
     expected = {
-        "conditioning_manifest": str(manifest_path),
-        "conditioning_manifest_sha256": manifest.prompt_file_sha256,
+        "conditioning_manifest": str(sidecar_path),
+        "conditioning_manifest_sha256": sha256_file(sidecar_path),
         "conditioning_config_sha256": config_sha256,
         "prefix_length": protocol.prefix_length,
         "evaluation_continuation_length": protocol.evaluation_continuation_length,

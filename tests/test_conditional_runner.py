@@ -104,6 +104,13 @@ def _conditional_records() -> list[dict[str, object]]:
     return records
 
 
+def _sidecar(root: Path) -> Path:
+    path = root / "data" / "manifests" / "conditional-lm1b-c64.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}\n", encoding="utf-8")
+    return path
+
+
 def test_conditional_runner_publishes_in_isolated_root_with_verified_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -115,6 +122,7 @@ def test_conditional_runner_publishes_in_isolated_root_with_verified_contract(
     manifest_path = tmp_path / "data" / "conditional" / "lm1b-c64" / "prompts.jsonl"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text("{}\n", encoding="utf-8")
+    sidecar_path = _sidecar(tmp_path)
     prompt_manifest = PromptManifest(
         schema_version=1,
         protocol="c64_zs_v1",
@@ -145,11 +153,11 @@ def test_conditional_runner_publishes_in_isolated_root_with_verified_contract(
         return original_writer(path, records, **kwargs)
 
     monkeypatch.setattr(runner_module, "write_conditional_samples_atomic", writer)
-    expected_manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    expected_manifest_sha = hashlib.sha256(sidecar_path.read_bytes()).hexdigest()
     expected_config_sha = hashlib.sha256(config.read_bytes()).hexdigest()
     request = RunRequest(
         **{
-            **_conditional_request(manifest_path).__dict__,
+            **_conditional_request(sidecar_path).__dict__,
             "conditioning_manifest_sha256": expected_manifest_sha,
             "conditioning_config_sha256": expected_config_sha,
         }
@@ -180,6 +188,7 @@ def test_conditional_runner_allows_descendant_of_isolated_root(
     manifest_path = tmp_path / "data" / "conditional" / "lm1b-c64" / "prompts.jsonl"
     manifest_path.parent.mkdir(parents=True)
     manifest_path.write_text("{}\n", encoding="utf-8")
+    sidecar_path = _sidecar(tmp_path)
     prompt_manifest = PromptManifest(
         schema_version=1, protocol="c64_zs_v1", dataset="lm1b", source_split="validation",
         source_processed_path="data/processed/lm1b-bert-128/validation", source_manifest_path="data/manifests/lm1b.json",
@@ -191,8 +200,8 @@ def test_conditional_runner_allows_descendant_of_isolated_root(
     monkeypatch.setattr(runner_module, "verify_prompts", lambda root, dataset, config: prompt_manifest)
     request = RunRequest(
         **{
-            **_conditional_request(manifest_path).__dict__,
-            "conditioning_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            **_conditional_request(sidecar_path).__dict__,
+            "conditioning_manifest_sha256": hashlib.sha256(sidecar_path.read_bytes()).hexdigest(),
             "conditioning_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
             "results_root": str(tmp_path / "results" / "conditional" / "smoke"),
         }
@@ -215,7 +224,8 @@ def test_conditional_runner_rejects_results_root_outside_isolated_tree(
     prompt = tmp_path / "data" / "conditional" / "lm1b-c64" / "prompts.jsonl"
     prompt.parent.mkdir(parents=True)
     prompt.write_text("{}\n", encoding="utf-8")
-    manifest = _conditional_request(prompt)
+    sidecar_path = _sidecar(tmp_path)
+    manifest = _conditional_request(sidecar_path)
     monkeypatch.setattr(runner_module, "verify_prompts", lambda root, dataset, config: PromptManifest(
         schema_version=1, protocol="c64_zs_v1", dataset="lm1b", source_split="validation",
         source_processed_path="x", source_manifest_path="y", source_manifest_sha256="c" * 64,
@@ -224,7 +234,7 @@ def test_conditional_runner_rejects_results_root_outside_isolated_tree(
         evaluation_continuation_length=64, model_length=128, prompt_file="data/conditional/lm1b-c64/prompts.jsonl",
         prompt_file_sha256=hashlib.sha256(prompt.read_bytes()).hexdigest(),
     ))
-    request = RunRequest(**{**manifest.__dict__, "conditioning_manifest_sha256": hashlib.sha256(prompt.read_bytes()).hexdigest(), "conditioning_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(), "results_root": str(tmp_path / "results")})
+    request = RunRequest(**{**manifest.__dict__, "conditioning_manifest_sha256": hashlib.sha256(sidecar_path.read_bytes()).hexdigest(), "conditioning_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(), "results_root": str(tmp_path / "results")})
     command = [sys.executable, "-c", "raise SystemExit(99)"]
 
     with pytest.raises(ValueError, match="conditional.*results_root"):

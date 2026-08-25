@@ -4,9 +4,12 @@ from pathlib import Path
 import pytest
 
 import dlb.conditional_matrix as conditional_matrix
+import dlb.runner as runner_module
 from dlb.conditional_prompts import PromptManifest, load_protocol
 from dlb.matrix import build_matrix
 from dlb.registry import load_registry
+from dlb.runner import RunRequest
+from tests.test_runner import FakeAdapter, prepare_canonical_root
 
 
 ROOT = Path(__file__).parents[1]
@@ -93,6 +96,46 @@ def test_conditional_matrix_verifies_both_prompts_and_binds_sidecar_digest(
         assert {task.conditioning_manifest_sha256 for task in dataset_tasks} == {
             hashlib.sha256(sidecar.read_bytes()).hexdigest()
         }
+
+
+def test_conditional_matrix_task_resolves_through_runner_contract(
+    registry, tmp_path, monkeypatch
+):
+    """Catch matrix task fields that cannot be submitted to the shared runner."""
+
+    prepare_canonical_root(tmp_path)
+    config = tmp_path / "configs" / "conditional.yaml"
+    config.write_text(
+        (ROOT / "configs" / "conditional.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    _install_verified_sidecars(tmp_path, monkeypatch)
+    manifests = {dataset: _prompt_manifest(dataset) for dataset in ("lm1b", "owt")}
+    monkeypatch.setattr(
+        runner_module, "verify_prompts", lambda root, dataset, protocol: manifests[dataset]
+    )
+    tasks = conditional_matrix.build_conditional_matrix(
+        registry, root=tmp_path, protocol=load_protocol(config)
+    )
+    task = next(item for item in tasks if (item.model, item.dataset, item.steps) == ("flm", "lm1b", 2))
+    request = RunRequest(
+        run_id=task.task_id,
+        model_id=task.model,
+        dataset_id=task.dataset,
+        step_count=task.steps,
+        seed=task.seed,
+        sample_count=task.sample_count,
+        generation_mode="conditional_prefix",
+        conditioning_manifest=task.conditioning_manifest,
+        conditioning_manifest_sha256=task.conditioning_manifest_sha256,
+    )
+
+    resolved, _ = runner_module._resolve_request(
+        request, tmp_path, FakeAdapter([], [])
+    )
+
+    assert resolved.conditioning_manifest == task.conditioning_manifest
+    assert resolved.conditioning_manifest_sha256 == task.conditioning_manifest_sha256
 
 
 @pytest.mark.parametrize("failure", ["missing", "tampered"])
