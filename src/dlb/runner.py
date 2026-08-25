@@ -17,17 +17,21 @@ import socket
 import stat
 import subprocess
 import sys
-from typing import Iterable, Protocol, Sequence
+from typing import Iterable, Literal, Protocol, Sequence
 
 from dlb.checkpoints import load_checkpoint_manifest
+from dlb.conditional_prompts import load_protocol, verify_prompts
 from dlb.io import (
     SampleValidationError,
     atomic_json_write,
     ensure_safe_directory,
+    expected_conditional_schedule,
     open_safe_output,
     remove_safe_file,
     sha256_file,
+    validate_conditional_samples,
     validate_samples,
+    write_conditional_samples_atomic,
     write_samples_atomic,
 )
 from dlb.registry import load_registry
@@ -65,6 +69,16 @@ class RunRequest:
     environment: str | None = None
     device: str | None = None
     results_root: str | None = None
+    generation_mode: Literal["unconditional", "conditional_prefix"] = "unconditional"
+    conditioning_manifest: str | None = None
+    conditioning_manifest_sha256: str | None = None
+    conditioning_config_sha256: str | None = None
+    prefix_length: int | None = None
+    evaluation_continuation_length: int | None = None
+    prompt_count: int | None = None
+    diversity_prompt_count: int | None = None
+    completions_per_diversity_prompt: int | None = None
+    completion_schedule: str | None = None
 
 
 @dataclass(frozen=True)
@@ -305,6 +319,98 @@ def load_adapter(adapter_id: str) -> SampleAdapter:
     return candidate() if isinstance(candidate, type) else candidate
 
 
+_CONDITIONAL_FIELDS = (
+    "conditioning_manifest",
+    "conditioning_manifest_sha256",
+    "conditioning_config_sha256",
+    "prefix_length",
+    "evaluation_continuation_length",
+    "prompt_count",
+    "diversity_prompt_count",
+    "completions_per_diversity_prompt",
+    "completion_schedule",
+)
+
+
+def _completion_schedule_text(prompt_count: int, diversity_prompt_count: int, completions: int) -> str:
+    """Serialize the canonical schedule in the adapter-facing compact form."""
+
+    return f"c0:p0-{prompt_count - 1};c1-{completions - 1}:p0-{diversity_prompt_count - 1}"
+
+
+def _resolve_conditional_request(request: RunRequest, root: Path) -> dict[str, object]:
+    """Verify prompt/data bindings and derive the only publishable C64 contract."""
+
+    config_path = root / "configs" / "conditional.yaml"
+    if config_path.is_symlink() or not config_path.is_file():
+        raise ValueError("canonical conditional protocol is missing: configs/conditional.yaml")
+    protocol = load_protocol(config_path)
+    manifest = verify_prompts(root, request.dataset_id, protocol)
+    if manifest.dataset != request.dataset_id or manifest.protocol != protocol.protocol:
+        raise ValueError("verified conditional prompt manifest differs from request")
+    if (
+        manifest.prompt_count != protocol.prompt_count
+        or manifest.prefix_length != protocol.prefix_length
+        or manifest.evaluation_continuation_length != protocol.evaluation_continuation_length
+        or manifest.model_length != protocol.datasets[request.dataset_id].model_length
+    ):
+        raise ValueError("verified conditional prompt manifest differs from protocol")
+    manifest_path = (root / manifest.prompt_file).resolve()
+    config_sha256 = sha256_file(config_path)
+    schedule = expected_conditional_schedule(
+        protocol.prompt_count,
+        protocol.diversity_prompt_count,
+        protocol.completions_per_diversity_prompt,
+    )
+    completion_schedule = _completion_schedule_text(
+        protocol.prompt_count,
+        protocol.diversity_prompt_count,
+        protocol.completions_per_diversity_prompt,
+    )
+    expected = {
+        "conditioning_manifest": str(manifest_path),
+        "conditioning_manifest_sha256": manifest.prompt_file_sha256,
+        "conditioning_config_sha256": config_sha256,
+        "prefix_length": protocol.prefix_length,
+        "evaluation_continuation_length": protocol.evaluation_continuation_length,
+        "prompt_count": protocol.prompt_count,
+        "diversity_prompt_count": protocol.diversity_prompt_count,
+        "completions_per_diversity_prompt": protocol.completions_per_diversity_prompt,
+        "completion_schedule": completion_schedule,
+    }
+    for name, value in expected.items():
+        asserted = getattr(request, name)
+        if asserted is not None and asserted != value:
+            raise ValueError(f"conditional {name} assertion differs from verified contract")
+    if request.sample_count != len(schedule):
+        raise ValueError(f"conditional sample_count must be {len(schedule)} for the verified schedule")
+    return expected
+
+
+def _conditional_io_contract(request: RunRequest, root: Path) -> tuple[list[tuple[int, int]], int, int]:
+    """Re-read the verified prompt contract needed by conditional publication."""
+
+    protocol = load_protocol(root / "configs" / "conditional.yaml")
+    manifest = verify_prompts(root, request.dataset_id, protocol)
+    if (
+        request.prompt_count != protocol.prompt_count
+        or request.diversity_prompt_count != protocol.diversity_prompt_count
+        or request.completions_per_diversity_prompt != protocol.completions_per_diversity_prompt
+        or request.prefix_length != manifest.prefix_length
+        or request.evaluation_continuation_length != manifest.evaluation_continuation_length
+    ):
+        raise ValueError("conditional request differs from verified prompt contract")
+    return (
+        expected_conditional_schedule(
+            protocol.prompt_count,
+            protocol.diversity_prompt_count,
+            protocol.completions_per_diversity_prompt,
+        ),
+        manifest.model_length,
+        manifest.vocabulary_size,
+    )
+
+
 def _resolve_request(request: RunRequest, root: Path, adapter: SampleAdapter | None) -> tuple[RunRequest, SampleAdapter]:
     registry_path = root / "configs" / "experiments.yaml"
     if not registry_path.is_file():
@@ -325,6 +431,14 @@ def _resolve_request(request: RunRequest, root: Path, adapter: SampleAdapter | N
         raise ValueError("sample_count must be positive")
     if request.step_count <= 0:
         raise ValueError("step_count must be positive")
+    if request.generation_mode not in {"unconditional", "conditional_prefix"}:
+        raise ValueError(f"unsupported generation mode: {request.generation_mode}")
+    if request.generation_mode == "unconditional":
+        if any(getattr(request, name) is not None for name in _CONDITIONAL_FIELDS):
+            raise ValueError("unconditional requests must not include conditional fields")
+        conditional = {}
+    else:
+        conditional = _resolve_conditional_request(request, root)
 
     source_lock = _safe_json_load(root / "artifacts" / "source_lock.json")
     sources = source_lock.get("sources") if source_lock is not None else None
@@ -368,6 +482,7 @@ def _resolve_request(request: RunRequest, root: Path, adapter: SampleAdapter | N
             "checkpoint_lock_id": checkpoint.lock_id,
             "checkpoint_selection": checkpoint.selection,
             "checkpoint_teacher_family": checkpoint.teacher_family,
+            **conditional,
         }
     )
     if resolved.checkpoint_sha256 is None or resolved.checkpoint_lock_id is None:
@@ -376,7 +491,7 @@ def _resolve_request(request: RunRequest, root: Path, adapter: SampleAdapter | N
 
 
 def _identity(request: RunRequest, command: list[str]) -> dict[str, object]:
-    return {
+    identity = {
         "run_id": request.run_id,
         "model_id": request.model_id,
         "dataset_id": request.dataset_id,
@@ -395,6 +510,22 @@ def _identity(request: RunRequest, command: list[str]) -> dict[str, object]:
         "results_root": request.results_root,
         "command_sha256": _canonical_sha256(command),
     }
+    if request.generation_mode == "conditional_prefix":
+        identity.update(
+            {
+                "generation_mode": request.generation_mode,
+                "conditioning_manifest": request.conditioning_manifest,
+                "conditioning_manifest_sha256": request.conditioning_manifest_sha256,
+                "conditioning_config_sha256": request.conditioning_config_sha256,
+                "prefix_length": request.prefix_length,
+                "evaluation_continuation_length": request.evaluation_continuation_length,
+                "prompt_count": request.prompt_count,
+                "diversity_prompt_count": request.diversity_prompt_count,
+                "completions_per_diversity_prompt": request.completions_per_diversity_prompt,
+                "completion_schedule": request.completion_schedule,
+            }
+        )
+    return identity
 
 
 def _write_failure(
@@ -459,7 +590,17 @@ def run_experiment(
     metadata = _safe_json_load(metadata_path)
     if metadata is not None and metadata.get("status") == "succeeded" and metadata.get("identity") == identity:
         try:
-            validate_samples(samples_path, expected=request.sample_count)
+            if request.generation_mode == "conditional_prefix":
+                schedule, sequence_length, vocab_size = _conditional_io_contract(request, root)
+                validate_conditional_samples(
+                    samples_path,
+                    expected=request.sample_count,
+                    schedule=schedule,
+                    sequence_length=sequence_length,
+                    vocab_size=vocab_size,
+                )
+            else:
+                validate_samples(samples_path, expected=request.sample_count)
         except SampleValidationError:
             pass
         else:
@@ -494,8 +635,26 @@ def run_experiment(
         return RunResult("failed", run_dir, completed.returncode)
     try:
         records = adapter.convert_outputs(request, run_dir)
-        write_samples_atomic(samples_path, records, expected=request.sample_count)
-        validate_samples(samples_path, expected=request.sample_count)
+        if request.generation_mode == "conditional_prefix":
+            schedule, sequence_length, vocab_size = _conditional_io_contract(request, root)
+            write_conditional_samples_atomic(
+                samples_path,
+                records,
+                expected=request.sample_count,
+                schedule=schedule,
+                sequence_length=sequence_length,
+                vocab_size=vocab_size,
+            )
+            validate_conditional_samples(
+                samples_path,
+                expected=request.sample_count,
+                schedule=schedule,
+                sequence_length=sequence_length,
+                vocab_size=vocab_size,
+            )
+        else:
+            write_samples_atomic(samples_path, records, expected=request.sample_count)
+            validate_samples(samples_path, expected=request.sample_count)
     except Exception as error:
         _write_failure(
             run_dir, request, stage="conversion", message=str(error), returncode=1, command=command,
@@ -549,10 +708,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--steps", type=int, required=True)
-    parser.add_argument("--num-samples", type=int, default=1024)
+    parser.add_argument("--num-samples", type=int)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--device")
     parser.add_argument("--results-root", type=Path)
+    parser.add_argument(
+        "--generation-mode",
+        choices=("unconditional", "conditional_prefix"),
+        default="unconditional",
+    )
+    parser.add_argument("--conditioning-manifest", type=Path)
+    parser.add_argument("--conditioning-manifest-sha256")
+    parser.add_argument("--conditioning-config", type=Path)
+    parser.add_argument("--prefix-length", type=int)
+    parser.add_argument("--evaluation-continuation-length", type=int)
+    parser.add_argument("--prompt-count", type=int)
+    parser.add_argument("--diversity-prompt-count", type=int)
+    parser.add_argument("--completions-per-diversity-prompt", type=int)
+    parser.add_argument("--completion-schedule")
     parser.add_argument("--validate-only", action="store_true")
     arguments = parser.parse_args(argv)
     if arguments.validate_only:
@@ -567,9 +740,31 @@ def main(argv: list[str] | None = None) -> int:
         dataset_id=arguments.dataset,
         step_count=arguments.steps,
         seed=arguments.seed,
-        sample_count=arguments.num_samples,
+        sample_count=(
+            arguments.num_samples
+            if arguments.num_samples is not None
+            else (2048 if arguments.generation_mode == "conditional_prefix" else 1024)
+        ),
         device=arguments.device,
         results_root=str(arguments.results_root.resolve()) if arguments.results_root else None,
+        generation_mode=arguments.generation_mode,
+        conditioning_manifest=(
+            str(arguments.conditioning_manifest.resolve())
+            if arguments.conditioning_manifest is not None
+            else None
+        ),
+        conditioning_manifest_sha256=arguments.conditioning_manifest_sha256,
+        conditioning_config_sha256=(
+            sha256_file(arguments.conditioning_config.resolve())
+            if arguments.conditioning_config is not None
+            else None
+        ),
+        prefix_length=arguments.prefix_length,
+        evaluation_continuation_length=arguments.evaluation_continuation_length,
+        prompt_count=arguments.prompt_count,
+        diversity_prompt_count=arguments.diversity_prompt_count,
+        completions_per_diversity_prompt=arguments.completions_per_diversity_prompt,
+        completion_schedule=arguments.completion_schedule,
     )
     try:
         result = run_experiment(request, arguments.root)
