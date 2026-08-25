@@ -146,6 +146,45 @@ def atomic_json_write(path: Path, value: object) -> None:
     _atomic_bytes_write(path, payload.encode("utf-8"))
 
 
+def write_compact_jsonl_atomic(path: Path, records: Iterable[Mapping[str, object]]) -> int:
+    """Atomically publish compact, deterministic UTF-8 JSONL records.
+
+    Callers retain ownership of record-specific validation.  This helper owns the
+    descriptor-safe temporary-file, fsync, replacement, and directory-durability
+    protocol shared by JSONL artifact types.
+    """
+
+    _ensure_safe_directory(path.parent)
+    _require_regular_or_missing(path)
+    temporary, descriptor = _open_temporary(path)
+    count = 0
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as temporary_file:
+            for count, record in enumerate(records, start=1):
+                temporary_file.write(
+                    json.dumps(
+                        dict(record),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                    + "\n"
+                )
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        _require_regular_or_missing(path)
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+        return count
+    except BaseException:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _json_object_with_unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
