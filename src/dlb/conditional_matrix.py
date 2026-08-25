@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from dlb.conditional_prompts import ConditionalProtocol, load_protocol
+from dlb.conditional_prompts import ConditionalProtocol, load_protocol, verify_prompts
 from dlb.io import sha256_file
 from dlb.matrix import build_matrix, unsupported_inventory, write_unsupported_inventory
 from dlb.registry import ExperimentRegistry
@@ -63,8 +63,8 @@ def _default_protocol(root: Path) -> ConditionalProtocol:
     return load_protocol(config)
 
 
-def _prompt_path(root: Path, dataset: str) -> Path:
-    return root / "data" / "conditional" / f"{dataset}-c64" / "prompts.jsonl"
+def _sidecar_path(root: Path, dataset: str) -> Path:
+    return root / "data" / "manifests" / f"conditional-{dataset}-c64.json"
 
 
 def build_conditional_matrix(
@@ -75,18 +75,25 @@ def build_conditional_matrix(
 ) -> list[ConditionalMatrixTask]:
     """Expand the supported registry coverage into the isolated C64 result tree.
 
-    Prompt files are generated independently before GPU execution.  When they
-    are already present, bind their bytes here; otherwise leave the digest empty
-    so the runner can establish the mandatory verified binding at publication.
+    Verify both prompt artifacts before expanding tasks so each matrix row is
+    already bound to its canonical sidecar manifest.
     """
 
     root_path = _root_path(root)
     protocol = protocol or _default_protocol(root_path)
+    verified_sidecars: dict[str, tuple[Path, str]] = {}
+    for dataset in sorted(protocol.datasets):
+        manifest = verify_prompts(root_path, dataset, protocol)
+        if manifest.dataset != dataset:
+            raise ValueError("verified conditional prompt manifest has the wrong dataset")
+        sidecar = _sidecar_path(root_path, dataset)
+        if sidecar.is_symlink() or not sidecar.is_file():
+            raise ValueError(f"conditional prompt manifest is missing or unsafe: {sidecar}")
+        verified_sidecars[dataset] = (sidecar, sha256_file(sidecar))
     ordinary = build_matrix(registry, root=root_path, sample_count=2048, seed=protocol.sampling_seed)
     tasks: list[ConditionalMatrixTask] = []
     for task in ordinary:
-        prompt_path = _prompt_path(root_path, task.dataset)
-        manifest_sha256 = sha256_file(prompt_path) if prompt_path.is_file() else ""
+        sidecar, manifest_sha256 = verified_sidecars[task.dataset]
         sample_dir = root_path / "results" / "conditional" / "samples" / task.dataset / task.model / f"steps_{task.steps}"
         metrics_path = root_path / "results" / "conditional" / "metrics" / task.dataset / task.model / f"steps_{task.steps}" / "metrics.json"
         timing_path = root_path / "results" / "conditional" / "timing" / task.dataset / task.model / f"steps_{task.steps}" / "timing.json"
@@ -104,7 +111,7 @@ def build_conditional_matrix(
                 source=task.source,
                 provenance=task.provenance,
                 protocol=protocol.protocol,
-                conditioning_manifest=prompt_path.as_posix(),
+                conditioning_manifest=sidecar.as_posix(),
                 conditioning_manifest_sha256=manifest_sha256,
                 sample_dir=sample_dir.as_posix(),
                 metrics_path=metrics_path.as_posix(),

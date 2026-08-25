@@ -345,6 +345,8 @@ def _resolve_conditional_request(request: RunRequest, root: Path) -> dict[str, o
     if config_path.is_symlink() or not config_path.is_file():
         raise ValueError("canonical conditional protocol is missing: configs/conditional.yaml")
     protocol = load_protocol(config_path)
+    if request.seed != protocol.sampling_seed:
+        raise ValueError("conditional seed differs from the verified protocol")
     manifest = verify_prompts(root, request.dataset_id, protocol)
     if manifest.dataset != request.dataset_id or manifest.protocol != protocol.protocol:
         raise ValueError("verified conditional prompt manifest differs from request")
@@ -385,6 +387,25 @@ def _resolve_conditional_request(request: RunRequest, root: Path) -> dict[str, o
     if request.sample_count != len(schedule):
         raise ValueError(f"conditional sample_count must be {len(schedule)} for the verified schedule")
     return expected
+
+
+def _conditional_results_root(request: RunRequest, root: Path) -> str:
+    """Return an isolated conditional result root, preserving smoke descendants."""
+
+    isolated_root = (root / "results" / "conditional").resolve()
+    if request.results_root is None:
+        return str(isolated_root)
+    requested = Path(request.results_root)
+    if requested.is_symlink():
+        raise ValueError("conditional results_root is a symlink")
+    resolved = requested.resolve()
+    try:
+        resolved.relative_to(isolated_root)
+    except ValueError as error:
+        raise ValueError(
+            "conditional results_root must be root/results/conditional or a descendant"
+        ) from error
+    return str(resolved)
 
 
 def _conditional_io_contract(request: RunRequest, root: Path) -> tuple[list[tuple[int, int]], int, int]:
@@ -438,7 +459,10 @@ def _resolve_request(request: RunRequest, root: Path, adapter: SampleAdapter | N
             raise ValueError("unconditional requests must not include conditional fields")
         conditional = {}
     else:
-        conditional = _resolve_conditional_request(request, root)
+        conditional = {
+            **_resolve_conditional_request(request, root),
+            "results_root": _conditional_results_root(request, root),
+        }
 
     source_lock = _safe_json_load(root / "artifacts" / "source_lock.json")
     sources = source_lock.get("sources") if source_lock is not None else None

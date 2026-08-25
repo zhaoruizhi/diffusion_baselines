@@ -152,7 +152,6 @@ def test_conditional_runner_publishes_in_isolated_root_with_verified_contract(
             **_conditional_request(manifest_path).__dict__,
             "conditioning_manifest_sha256": expected_manifest_sha,
             "conditioning_config_sha256": expected_config_sha,
-            "results_root": str(tmp_path / "results" / "conditional"),
         }
     )
     command = [sys.executable, "-c", "print('ok')"]
@@ -168,3 +167,91 @@ def test_conditional_runner_publishes_in_isolated_root_with_verified_contract(
         "sequence_length": 128,
         "vocab_size": 10,
     }
+
+
+def test_conditional_runner_allows_descendant_of_isolated_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Catch conditional smoke output roots being rejected despite remaining isolated."""
+
+    prepare_canonical_root(tmp_path)
+    config = tmp_path / "configs" / "conditional.yaml"
+    config.write_text((ROOT / "configs" / "conditional.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    manifest_path = tmp_path / "data" / "conditional" / "lm1b-c64" / "prompts.jsonl"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text("{}\n", encoding="utf-8")
+    prompt_manifest = PromptManifest(
+        schema_version=1, protocol="c64_zs_v1", dataset="lm1b", source_split="validation",
+        source_processed_path="data/processed/lm1b-bert-128/validation", source_manifest_path="data/manifests/lm1b.json",
+        source_manifest_sha256="c" * 64, tokenizer_id="bert-base-uncased", tokenizer_revision="revision",
+        vocabulary_size=10, selection_algorithm="test-selection", selection_seed=42, source_row_count=1024,
+        prompt_count=1024, prefix_length=64, evaluation_continuation_length=64, model_length=128,
+        prompt_file="data/conditional/lm1b-c64/prompts.jsonl", prompt_file_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(runner_module, "verify_prompts", lambda root, dataset, config: prompt_manifest)
+    request = RunRequest(
+        **{
+            **_conditional_request(manifest_path).__dict__,
+            "conditioning_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "conditioning_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(),
+            "results_root": str(tmp_path / "results" / "conditional" / "smoke"),
+        }
+    )
+    command = [sys.executable, "-c", "print('ok')"]
+
+    result = run_experiment(request, tmp_path, adapter=FakeAdapter(command, _conditional_records()))
+
+    assert result.run_dir == tmp_path / "results" / "conditional" / "smoke" / "samples" / "lm1b" / "flm" / "steps_2"
+
+
+def test_conditional_runner_rejects_results_root_outside_isolated_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Catch a conditional request that can write into unconditional results."""
+
+    prepare_canonical_root(tmp_path)
+    config = tmp_path / "configs" / "conditional.yaml"
+    config.write_text((ROOT / "configs" / "conditional.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    prompt = tmp_path / "data" / "conditional" / "lm1b-c64" / "prompts.jsonl"
+    prompt.parent.mkdir(parents=True)
+    prompt.write_text("{}\n", encoding="utf-8")
+    manifest = _conditional_request(prompt)
+    monkeypatch.setattr(runner_module, "verify_prompts", lambda root, dataset, config: PromptManifest(
+        schema_version=1, protocol="c64_zs_v1", dataset="lm1b", source_split="validation",
+        source_processed_path="x", source_manifest_path="y", source_manifest_sha256="c" * 64,
+        tokenizer_id="tokenizer", tokenizer_revision="revision", vocabulary_size=10, selection_algorithm="selection",
+        selection_seed=42, source_row_count=1024, prompt_count=1024, prefix_length=64,
+        evaluation_continuation_length=64, model_length=128, prompt_file="data/conditional/lm1b-c64/prompts.jsonl",
+        prompt_file_sha256=hashlib.sha256(prompt.read_bytes()).hexdigest(),
+    ))
+    request = RunRequest(**{**manifest.__dict__, "conditioning_manifest_sha256": hashlib.sha256(prompt.read_bytes()).hexdigest(), "conditioning_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest(), "results_root": str(tmp_path / "results")})
+    command = [sys.executable, "-c", "raise SystemExit(99)"]
+
+    with pytest.raises(ValueError, match="conditional.*results_root"):
+        run_experiment(request, tmp_path, adapter=FakeAdapter(command, []))
+
+
+def test_conditional_runner_rejects_noncanonical_sampling_seed_before_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Catch a conditional run whose seed diverges from the verified C64 protocol."""
+
+    prepare_canonical_root(tmp_path)
+    config = tmp_path / "configs" / "conditional.yaml"
+    config.write_text((ROOT / "configs" / "conditional.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    prompt = tmp_path / "data" / "conditional" / "lm1b-c64" / "prompts.jsonl"
+    prompt.parent.mkdir(parents=True)
+    prompt.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(runner_module, "verify_prompts", lambda root, dataset, config: PromptManifest(
+        schema_version=1, protocol="c64_zs_v1", dataset="lm1b", source_split="validation",
+        source_processed_path="x", source_manifest_path="y", source_manifest_sha256="c" * 64,
+        tokenizer_id="tokenizer", tokenizer_revision="revision", vocabulary_size=10, selection_algorithm="selection",
+        selection_seed=42, source_row_count=1024, prompt_count=1024, prefix_length=64,
+        evaluation_continuation_length=64, model_length=128, prompt_file="data/conditional/lm1b-c64/prompts.jsonl",
+        prompt_file_sha256=hashlib.sha256(prompt.read_bytes()).hexdigest(),
+    ))
+    request = RunRequest(**{**_conditional_request(prompt).__dict__, "seed": 7, "conditioning_manifest_sha256": hashlib.sha256(prompt.read_bytes()).hexdigest(), "conditioning_config_sha256": hashlib.sha256(config.read_bytes()).hexdigest()})
+    command = [sys.executable, "-c", "raise SystemExit(99)"]
+
+    with pytest.raises(ValueError, match="seed"):
+        run_experiment(request, tmp_path, adapter=FakeAdapter(command, []))
