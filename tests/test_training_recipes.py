@@ -159,6 +159,45 @@ def test_di4c_sampling_checkpoints_match_reference_selection() -> None:
     assert load_recipe("duo_di4c", "owt").sampling_step == 50_000
 
 
+def test_lm1b_di4c_uses_project_wrapper_and_teacher_student_init() -> None:
+    recipe = load_recipe("duo_di4c", "lm1b")
+    launch = build_launch(
+        recipe,
+        root=ROOT,
+        source=ROOT / "upstreams" / "di4c",
+        output=ROOT / "checkpoints" / "reference_reproduction" / "duo_di4c" / "lm1b",
+        teacher=ROOT / "checkpoints" / "fixture" / "uniform_duo.ckpt",
+        devices=2,
+        nodes=1,
+        per_device_batch_size=1,
+        seed=42,
+        resume=True,
+    )
+
+    assert Path(launch.command[2]).name == "train_di4c.py"
+    assert override(launch.command, "+dlb_student_init") == "teacher"
+
+
+def test_di4c_student_init_can_be_overridden_to_scratch() -> None:
+    recipe = load_recipe("mdlm_di4c", "lm1b")
+    launch = build_launch(
+        recipe,
+        root=ROOT,
+        source=ROOT / "upstreams" / "di4c",
+        output=ROOT / "checkpoints" / "reference_reproduction" / "mdlm_di4c" / "lm1b",
+        teacher=ROOT / "checkpoints" / "fixture" / "masked_mdlm.ckpt",
+        devices=2,
+        nodes=1,
+        per_device_batch_size=1,
+        seed=42,
+        resume=True,
+        di4c_student_init="scratch",
+    )
+
+    assert Path(launch.command[2]).name == "train_di4c.py"
+    assert override(launch.command, "+dlb_student_init") == "scratch"
+
+
 @pytest.mark.parametrize(
     ("model", "dataset"),
     [

@@ -274,7 +274,7 @@ def load_recipe(model: str, dataset: str) -> TrainingRecipe:
             model,
             dataset,
             source="di4c",
-            entrypoint="sdtt/src/sdtt/main.py",
+            entrypoint="../../adapters/train_di4c.py",
             max_steps=sampling_step,
             global_batch_size=2,
             learning_rate=3e-5,
@@ -549,6 +549,7 @@ def _sdtt_command(
     accumulation: int,
     seed: int,
     resume: bool,
+    di4c_student_init: str | None = None,
 ) -> list[str]:
     train_name = "lm1b" if recipe.dataset == "lm1b" else "openwebtext-train"
     valid_name = "lm1b" if recipe.dataset == "lm1b" else "openwebtext-valid"
@@ -598,6 +599,13 @@ def _sdtt_command(
         f"+seed={seed}",
     ]
     if recipe.model.endswith("_di4c"):
+        init_mode = (
+            di4c_student_init
+            if di4c_student_init is not None
+            else ("teacher" if recipe.dataset == "lm1b" else "hf_small")
+        )
+        if init_mode not in {"hf_small", "teacher", "scratch"}:
+            raise RecipeError(f"unsupported Di4C student init mode: {init_mode!r}")
         command.extend(
             [
                 "is_di4c=true",
@@ -605,6 +613,7 @@ def _sdtt_command(
                 "T=1024",
                 "latent_bsize=16",
                 "round=7",
+                f"+dlb_student_init={init_mode}",
             ]
         )
     return command
@@ -622,6 +631,7 @@ def build_launch(
     per_device_batch_size: int,
     seed: int,
     resume: bool,
+    di4c_student_init: str | None = None,
 ) -> LaunchSpec:
     """Render one real upstream command without touching data, checkpoints, or GPUs."""
 
@@ -674,6 +684,7 @@ def build_launch(
             accumulation=accumulation,
             seed=seed,
             resume=resume,
+            di4c_student_init=di4c_student_init,
         )
     else:
         command = _standard_command(
@@ -1635,6 +1646,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--upstream-override", action="append", default=[])
+    parser.add_argument("--student-init", choices=("hf_small", "teacher", "scratch"))
     parser.add_argument("--dry-run", action="store_true")
     return parser
 
@@ -1656,6 +1668,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.recipe != "di4c" and arguments.model is not None:
         raise RecipeError("--model is valid only for the Di4C wrapper")
     recipe = load_recipe(model, arguments.dataset)
+    if arguments.student_init is not None and not recipe.model.endswith("_di4c"):
+        raise RecipeError("--student-init is valid only for Di4C recipes")
     _assert_locked("global batch size", arguments.global_batch_size, recipe.global_batch_size)
     _assert_locked("learning rate", arguments.learning_rate, recipe.learning_rate)
     _assert_locked("rounds", arguments.rounds, recipe.rounds)
@@ -1696,6 +1710,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         per_device_batch_size=per_device,
         seed=arguments.seed,
         resume=arguments.resume,
+        di4c_student_init=arguments.student_init,
     )
     if arguments.dry_run:
         print(json.dumps(_dry_record(launch), sort_keys=True))

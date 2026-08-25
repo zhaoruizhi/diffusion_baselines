@@ -387,6 +387,10 @@ def test_distillation_recipes_pin_the_declared_teacher_family(checkpoints):
         assert command.startswith("bash scripts/distill/di4c.sh")
         assert "is_di4c=true" in command
         assert "--teacher-family uniform_duo" in command
+        if recipe_id.endswith("_lm1b"):
+            assert "--student-init teacher" in command
+        else:
+            assert "--student-init hf_small" in command
         assert "Duo.ckpt" in command or "duo.ckpt" in command
         assert "MDLM" not in command
         assert "python src/sdtt/main.py" not in command
@@ -396,6 +400,7 @@ def test_distillation_recipes_pin_the_declared_teacher_family(checkpoints):
     assert masked_di4c.command.startswith("bash scripts/distill/di4c.sh")
     assert "is_di4c=true" in masked_di4c.command
     assert "--teacher-family masked_mdlm" in masked_di4c.command
+    assert "--student-init teacher" in masked_di4c.command
     assert "lm1b_MDLM_.ckpt" in masked_di4c.command
     assert "python src/sdtt/main.py" not in masked_di4c.command
 

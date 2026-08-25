@@ -322,6 +322,7 @@ recipes:
       --teacher-family uniform_duo
       --teacher-checkpoint checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_Duo.ckpt
       --output checkpoints/reference_reproduction/duo_di4c/lm1b
+      --student-init teacher
       --upstream-override is_di4c=true
     output: checkpoints/reference_reproduction/duo_di4c/lm1b
     sampling_checkpoint: student_checkpoints/20000.ckpt
@@ -341,6 +342,7 @@ recipes:
       --teacher-family uniform_duo
       --teacher-checkpoint checkpoints/official/duo/raw_owt/duo.ckpt
       --output checkpoints/reference_reproduction/duo_di4c/owt
+      --student-init hf_small
       --upstream-override is_di4c=true
     output: checkpoints/reference_reproduction/duo_di4c/owt
     sampling_checkpoint: student_checkpoints/50000.ckpt
@@ -378,6 +380,7 @@ recipes:
       --teacher-family masked_mdlm
       --teacher-checkpoint checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_MDLM_.ckpt
       --output checkpoints/reference_reproduction/mdlm_di4c/lm1b
+      --student-init teacher
       --upstream-override is_di4c=true
     output: checkpoints/reference_reproduction/mdlm_di4c/lm1b
     sampling_checkpoint: student_checkpoints/20000.ckpt

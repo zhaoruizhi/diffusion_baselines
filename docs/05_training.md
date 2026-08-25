@@ -37,10 +37,11 @@ bash scripts/distill/di4c.sh --model duo_di4c --dataset lm1b \
   --teacher-family uniform_duo \
   --teacher-checkpoint checkpoints/reference_reproduction/flm_baselines/lm1b/lm1b_Duo.ckpt \
   --output checkpoints/reference_reproduction/duo_di4c/lm1b \
+  --student-init teacher \
   --upstream-override is_di4c=true
 ```
 
-DCD/SDTT 使用 8 rounds × 10,000 steps、global batch 128、LR `6e-5`、warmup 2,500。Di4C 的 LM1B/OWT 采样 checkpoint 分别是 20,000/50,000；不能把 Zenodo masked SDTT checkpoint 当作 Duo/Di4C teacher。
+DCD/SDTT 使用 8 rounds × 10,000 steps、global batch 128、LR `6e-5`、warmup 2,500。Di4C 的 LM1B/OWT 采样 checkpoint 分别是 20,000/50,000；不能把 Zenodo masked SDTT checkpoint 当作 Duo/Di4C teacher。LM1B Di4C 默认用 `--student-init teacher`，避免公开 OWT/GPT2-vocab student 初始化与 LM1B/BERT vocab 不兼容；`--student-init scratch` 仅用于实验性随机 student 初始化。
 
 ## dry-run 与恢复
 
