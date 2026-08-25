@@ -12,7 +12,7 @@
 
 - 数据集固定为 LM1B（`bert-base-uncased`，长度 128）与 OWT（`gpt2`，长度 1024）。
 - OWT 原始顺序的最后 100,000 篇为 validation，其余为 train。
-- many-step 网格严格为 `1,2,4,8,16,32,1024`。
+- 多数 many-step 方法网格严格为 `1,2,4,8,16,32,1024`；RDLM 只使用 `1000,1024`。
 - few-step 网格严格为 `1,2,4,8,16,32`。
 - 每个受支持配置必须生成恰好 1,024 个有效样本。
 - 离散基线默认 ancestral sampling、temperature 1.0；FLM 使用 Euler；FMLM 使用论文 gamma-sampling；RDLM 使用官方 SDE sampler。
@@ -537,7 +537,7 @@ def test_langflow_inference_cli(request_factory):
     assert cmd[cmd.index("--seq_length") + 1] == "1024"
 
 def test_rdlm_uses_official_sde_sampler(request_factory):
-    joined = " ".join(RDLMAdapter().build_command(request_factory("rdlm", "lm1b", 32)))
+    joined = " ".join(RDLMAdapter().build_command(request_factory("rdlm", "lm1b", 1000)))
     assert "run_mode=sample" in joined and "exp=sample_lm1b" in joined
 ```
 

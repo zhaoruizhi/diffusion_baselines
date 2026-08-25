@@ -14,7 +14,7 @@
 2. 本地保存 LM1B 与 OWT 原始数据快照及经过固定 tokenizer、长度和划分处理的数据缓存；大文件同时提供可恢复的一键下载脚本和校验清单。
 3. 每个不兼容代码库拥有独立 Conda 环境定义；共享同一代码库的方法复用环境，但在清单中逐一映射。
 4. 覆盖指定的 6 个 many-step 模型和 5 个 few-step/distilled 模型。
-5. many-step 使用步数 `1,2,4,8,16,32,1024`；few-step 使用 `1,2,4,8,16,32`。
+5. 多数 many-step 方法使用步数 `1,2,4,8,16,32,1024`；RDLM 使用 `1000,1024`；few-step 使用 `1,2,4,8,16,32`。
 6. 每个可运行的“数据集 × 模型 × 步数”配置生成恰好 1,024 个有效样本。
 7. 每个配置报告 GPT-2 Large Generative Perplexity、平均单样本 unigram entropy、Self-BLEU 和 generation seconds/sample。
 8. 所有产物记录源码 commit、checkpoint 来源及 SHA256、数据集 revision、命令、随机种子、GPU、CUDA、PyTorch、精度和 batch size。
@@ -194,7 +194,7 @@ results/samples/<dataset>/<model>/steps_<N>/run_metadata.json
 
 ## 8. 实验矩阵与随机性
 
-- many-step：FLM、LangFlow、Duo、MDLM、CANDI、RDLM × `1,2,4,8,16,32,1024`。
+- many-step：FLM、LangFlow、Duo、MDLM、CANDI × `1,2,4,8,16,32,1024`；RDLM × `1000,1024`。
 - few-step：FMLM、Duo+DCD、Duo+Di4C、MDLM+SDTT、MDLM+Di4C × `1,2,4,8,16,32`。
 - 两个数据集分别运行；资源矩阵中的 `unsupported` 单元格跳过并生成机器可读原因。
 - 每个配置生成 1,024 个样本；写入采用原子临时文件，完成且通过 schema/数量校验后再改名。

@@ -451,6 +451,50 @@ def test_run_one_rejects_registry_invalid_step_before_fake_conda() -> None:
     assert "invalid step count 3" in completed.stderr
 
 
+def test_validate_only_uses_rdlm_official_step_override(capsys) -> None:
+    """Catch RDLM inheriting low-step many-grid cells after being marked official-only."""
+
+    project_root = Path(__file__).parents[1]
+
+    assert (
+        runner_module.main(
+            [
+                "--root",
+                str(project_root),
+                "--model",
+                "rdlm",
+                "--dataset",
+                "lm1b",
+                "--steps",
+                "1000",
+                "--seed",
+                "42",
+                "--validate-only",
+            ]
+        )
+        == 0
+    )
+    assert capsys.readouterr().out.strip() == "dlb-rdlm"
+    with pytest.raises(SystemExit) as raised:
+        runner_module.main(
+            [
+                "--root",
+                str(project_root),
+                "--model",
+                "rdlm",
+                "--dataset",
+                "lm1b",
+                "--steps",
+                "32",
+                "--seed",
+                "42",
+                "--validate-only",
+            ]
+        )
+    assert raised.value.code == 2
+    assert "invalid step count 32" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("signum", [signal.SIGKILL, signal.SIGSTOP])
 def test_cli_does_not_reset_uncatchable_signal_handlers(monkeypatch, tmp_path: Path, signum: int) -> None:
     """Catch attempts to reset SIGKILL/SIGSTOP before re-emitting a child signal."""

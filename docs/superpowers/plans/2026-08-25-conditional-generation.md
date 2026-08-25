@@ -19,7 +19,7 @@
 - LM1B uses the existing BERT 128-token processed validation split; OWT uses the existing GPT-2 1,024-token processed validation split.
 - OWT generation retains the full 960-token suffix; aligned quality metrics use only its first 64 suffix tokens.
 - The first 64 output tokens must equal the prompt prefix after every relevant sampler transition and in every published record; any mismatch invalidates the artifact.
-- The conditional matrix contains the same 137 supported step tasks as the unconditional matrix, with RDLM/OWT retained in a separate unsupported inventory.
+- The conditional matrix contains the same 132 supported step tasks as the unconditional matrix, with RDLM/OWT retained in a separate unsupported inventory.
 - Conditional outputs live below `results/conditional/`; unconditional result paths and successful-publication identity semantics remain unchanged.
 - All model/tokenizer/checkpoint/prompt/sample artifacts are local-only and SHA-256 bound; no runtime network fallback is allowed.
 - Artifact writes are atomic and fail closed; batch-size incompatibility, partial schedules, duplicate IDs, digest drift, and token-bound violations are errors.
@@ -38,7 +38,7 @@
 - Modify `src/dlb/schema.py`: add `ConditionalSampleRecord` without changing `SampleRecord`.
 - Modify `src/dlb/io.py`: conditional JSONL reader/validator/atomic writer.
 - Modify `src/dlb/runner.py`: conditional request identity, validation, publication branch, and CLI flags.
-- Create `src/dlb/conditional_matrix.py`: separate versioned 137-task matrix and unsupported inventory.
+- Create `src/dlb/conditional_matrix.py`: separate versioned 132-task matrix and unsupported inventory.
 
 **Conditioning runtime**
 
@@ -294,7 +294,7 @@ git commit -m "feat: add conditional sample artifact contract"
 def test_conditional_matrix_matches_supported_unconditional_tasks(registry, tmp_path):
     ordinary = build_matrix(registry, root=tmp_path)
     conditional = build_conditional_matrix(registry, root=tmp_path)
-    assert len(conditional) == len(ordinary) == 137
+    assert len(conditional) == len(ordinary) == 132
     assert [(t.model, t.dataset, t.steps) for t in conditional] == [
         (t.model, t.dataset, t.steps) for t in ordinary
     ]
@@ -920,7 +920,7 @@ Expected: import failure for `dlb.conditional_aggregate`.
 
 - [ ] **Step 3: Implement cell linkage and strict matrix accounting**
 
-For each of the 137 tasks, validate sample JSONL first, then require run identity, checkpoint/source/tokenizer/prompt SHA linkage, metric `samples_sha256`, timing protocol/task identity, finite metric values, exact record counts, and prefix rate 1.0. Collect failures with `task_id`, stage, path, and message. Strict mode raises when any task fails; partial mode writes a visibly partial report.
+For each of the 132 tasks, validate sample JSONL first, then require run identity, checkpoint/source/tokenizer/prompt SHA linkage, metric `samples_sha256`, timing protocol/task identity, finite metric values, exact record counts, and prefix rate 1.0. Collect failures with `task_id`, stage, path, and message. Strict mode raises when any task fails; partial mode writes a visibly partial report.
 
 - [ ] **Step 4: Publish deterministic summary files atomically**
 
@@ -1113,4 +1113,4 @@ The local implementation is complete after Task 12. On the checkpoint/data serve
 7. `bash scripts/evaluate_conditional_4gpu.sh --gpus 0,1,2,3`
 8. `bash scripts/benchmark_conditional_4gpu.sh --gpus 0,1,2,3`
 9. `python scripts/aggregate_conditional_results.py --root "$PWD"`
-10. Require `complete=true`, `rows=137`, `failures=0`, one RDLM/OWT unsupported record, and prefix exact-match rate `1.0` for every row.
+10. Require `complete=true`, `rows=132`, `failures=0`, one RDLM/OWT unsupported record, and prefix exact-match rate `1.0` for every row.

@@ -7,11 +7,11 @@
 - 多步生成：FLM、LangFlow、Duo、MDLM、CANDI、RDLM。
 - 少步/单步蒸馏：FMLM、Duo+DCD、Duo+Di4C、MDLM+SDTT、MDLM+Di4C。
 - LM1B 使用 `bert-base-uncased`、长度 128；OWT 使用 `gpt2`、长度 1024。
-- 多步步数：`1 2 4 8 16 32 1024`；少步步数：`1 2 4 8 16 32`。
+- 多步步数：多数 many-step 方法使用 `1 2 4 8 16 32 1024`；RDLM 只使用官方默认 `1000` 和本项目原保留的 `1024`；少步步数：`1 2 4 8 16 32`。
 - 每个受支持配置生成 1,024 个样本，seed 固定为 42。
 - 质量指标：GPT-2 Large Generative PPL、平均 unigram entropy、Self-BLEU；主延迟指标：独立 CUDA timing 的 seconds/sample。
 
-137 个受支持 generation cell 会写入 `results/matrix/generation.tsv`。RDLM/OWT 不会伪造任务，原因写入 `results/matrix/unsupported.tsv`。
+132 个受支持 generation cell 会写入 `results/matrix/generation.tsv`。RDLM/OWT 不会伪造任务，原因写入 `results/matrix/unsupported.tsv`。RDLM 的 `1/2/4/8/16/32` 不作为主 baseline：原始方法是约 1000 步 SDE 采样，低步数只是强行截断迭代次数，已在服务器诊断中表现出非规范 token 与异常低 PPL。
 
 ## 服务器最短路径
 

@@ -252,6 +252,67 @@ def test_di4c_wrapper_adds_original_script_directory_to_import_path(
         sys.path[:] = before
 
 
+def test_di4c_hf_small_student_init_preserves_configured_teacher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from adapters import train_di4c
+
+    fake_sdtt = types.ModuleType("sdtt")
+    fake_sdtt.load_small_student = lambda **kwargs: {
+        "source": "upstream-default-loader",
+        "kwargs": kwargs,
+    }
+    fake_core = types.ModuleType("sdtt.core")
+    fake_distill = types.ModuleType("sdtt.core.distill")
+    fake_multi_round = types.ModuleType("sdtt.core.distill.multi_round_sdtt")
+    calls = []
+
+    class FakeMultiRoundSDTT:
+        @classmethod
+        def from_pretrained(
+            cls,
+            repo,
+            revision,
+            *,
+            config=None,
+            student_as_teacher=True,
+        ):
+            calls.append(
+                {
+                    "repo": repo,
+                    "revision": revision,
+                    "config": config,
+                    "student_as_teacher": student_as_teacher,
+                }
+            )
+            return {"source": "direct-hf-small-loader"}
+
+    fake_multi_round.MultiRoundSDTT = FakeMultiRoundSDTT
+    monkeypatch.setitem(sys.modules, "sdtt", fake_sdtt)
+    monkeypatch.setitem(sys.modules, "sdtt.core", fake_core)
+    monkeypatch.setitem(sys.modules, "sdtt.core.distill", fake_distill)
+    monkeypatch.setitem(
+        sys.modules,
+        "sdtt.core.distill.multi_round_sdtt",
+        fake_multi_round,
+    )
+
+    train_di4c._patch_student_loader()
+    config = {"dlb_student_init": "hf_small"}
+
+    result = fake_sdtt.load_small_student(loss="kld", round=7, config=config)
+
+    assert result == {"source": "direct-hf-small-loader"}
+    assert calls == [
+        {
+            "repo": "jdeschena/sdtt",
+            "revision": "baselines_kld_step_70000",
+            "config": config,
+            "student_as_teacher": False,
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     ("model", "dataset"),
     [

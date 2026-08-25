@@ -9,15 +9,16 @@
 | Many-step | Duo | 1,2,4,8,16,32,1024 | LM1B、OWT | 14 |
 | Many-step | MDLM | 1,2,4,8,16,32,1024 | LM1B、OWT | 14 |
 | Many-step | CANDI | 1,2,4,8,16,32,1024 | LM1B、OWT | 14 |
-| Many-step | RDLM | 1,2,4,8,16,32,1024 | LM1B | 7 |
+| Many-step | RDLM | 1000,1024 | LM1B | 2 |
 | Few-step | FMLM | 1,2,4,8,16,32 | LM1B、OWT | 12 |
 | Few-step | Duo+DCD | 1,2,4,8,16,32 | LM1B、OWT | 12 |
 | Few-step | Duo+Di4C | 1,2,4,8,16,32 | LM1B、OWT | 12 |
 | Few-step | MDLM+SDTT | 1,2,4,8,16,32 | LM1B、OWT | 12 |
 | Few-step | MDLM+Di4C | 1,2,4,8,16,32 | LM1B、OWT | 12 |
-| **合计** |  |  |  | **137** |
+| **合计** |  |  |  | **132** |
 
 RDLM/OWT 是注册表声明的 unsupported cell，只保留一条 reason，不展开为 steps。
+RDLM/LM1B 也不展开 `1,2,4,8,16,32`：RDLM 原始 baseline 是官方 SDE sampler，默认约 1000 个数值积分步；少步网格不是论文方法，也不是训练过的蒸馏版本。服务器诊断显示这些低步 RDLM 行存在 retokenization、非规范上游 ID、低 entropy 与 PPL 非单调信号，因此主表只保留官方默认 `1000` 和与本项目旧网格对齐的 `1024`。
 
 ## 结果契约
 

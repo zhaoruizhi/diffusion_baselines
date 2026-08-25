@@ -45,6 +45,7 @@ models:
       owt: {status: supported, provenance: reference_reproduction, train_recipe: candi_owt}
   rdlm:
     category: many
+    step_override: [1000, 1024]
     environment: dlb-rdlm
     adapter: rdlm
     source: rdlm

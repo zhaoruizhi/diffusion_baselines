@@ -15,7 +15,7 @@ from dlb.adapters.langflow import LangFlowAdapter
 from dlb.adapters.mdlm import MDLMAdapter
 from dlb.adapters.rdlm import RDLMAdapter
 from dlb.adapters.sdtt import SDTTAdapter
-from dlb.registry import load_registry
+from dlb.registry import load_registry, step_grid_for_model
 from dlb.runner import RunRequest
 
 
@@ -66,6 +66,18 @@ def _record(
             "model": model_id,
             "dataset": dataset_id,
             "reason": support.reason,
+        }
+    allowed_steps = step_grid_for_model(registry, model_id)
+    if step_count not in allowed_steps:
+        joined_steps = ",".join(str(step) for step in allowed_steps)
+        return {
+            "status": "error",
+            "model": model_id,
+            "dataset": dataset_id,
+            "reason": (
+                f"invalid step count {step_count} for {model_id}/{dataset_id}; "
+                f"allowed: {joined_steps}"
+            ),
         }
     adapter = ADAPTERS.get(model_id)
     if adapter is None:

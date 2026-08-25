@@ -16,7 +16,7 @@ from dlb.adapters.base import AdapterError, BaseTeacherAdapter
 from dlb.checkpoints import load_checkpoint_manifest
 from dlb.command import ADAPTERS
 from dlb.io import atomic_json_write, sha256_file
-from dlb.registry import load_registry
+from dlb.registry import load_registry, step_grid_for_model
 from dlb.runner import RunRequest, _resolve_request
 from dlb.timing import _validate_metadata
 
@@ -83,13 +83,18 @@ def render_benchmark_matrix(
                     }
                 )
                 continue
-            if steps not in registry.step_grids[model.category]:
+            allowed_steps = step_grid_for_model(registry, model_id)
+            if steps not in allowed_steps:
+                joined_steps = ",".join(str(step) for step in allowed_steps)
                 records.append(
                     {
                         "status": "error",
                         "model": model_id,
                         "dataset": dataset_id,
-                        "reason": f"invalid step count {steps} for {model.category}",
+                        "reason": (
+                            f"invalid step count {steps} for {model_id}/{dataset_id}; "
+                            f"allowed: {joined_steps}"
+                        ),
                     }
                 )
                 continue

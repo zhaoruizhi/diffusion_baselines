@@ -668,10 +668,15 @@ def test_every_registry_cell_has_a_concrete_benchmark_command_or_structured_skip
 
     supported = [record for record in records if record["status"] == "supported"]
     skipped = [record for record in records if record["status"] == "unsupported"]
-    assert len(supported) == 21
+    errors = [record for record in records if record["status"] == "error"]
+    assert len(supported) == 20
     assert {(record["model"], record["dataset"]) for record in skipped} == {
         ("rdlm", "owt"),
     }
+    assert [(record["model"], record["dataset"]) for record in errors] == [
+        ("rdlm", "lm1b")
+    ]
+    assert "invalid step count 32" in errors[0]["reason"]
     for record in supported:
         command = record["command"]
         assert isinstance(command, list) and command
@@ -726,6 +731,26 @@ def test_benchmark_matrix_calls_adapter_benchmark_hook_not_plain_sampling(
 
     assert records[0]["status"] == "supported"
     assert records[0]["hook"] == "langflow.generate_samples"
+
+
+def test_benchmark_matrix_accepts_rdlm_official_default_step(tmp_path: Path) -> None:
+    """Catch benchmark dry-run accepting only rejection paths for RDLM."""
+
+    root = _prepare_benchmark_root(tmp_path)
+    records = render_benchmark_matrix(
+        root=root,
+        models=("rdlm",),
+        datasets=("lm1b",),
+        steps=1000,
+        seed=42,
+        precision="author",
+        output_root=root / "results/timing",
+        dry_run=True,
+    )
+
+    assert records[0]["status"] == "supported"
+    assert records[0]["hook"] == "rdlm.sampling_fn"
+    assert "sampling.steps=1000" in records[0]["command"]
 
 
 def test_teacher_capture_times_real_generate_only_after_loaded_model(monkeypatch, tmp_path: Path) -> None:

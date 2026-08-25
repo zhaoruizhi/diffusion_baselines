@@ -13,7 +13,7 @@ import yaml
 
 from dlb.checkpoints import load_checkpoint_manifest
 from dlb.io import atomic_json_write, sha256_file
-from dlb.registry import load_registry
+from dlb.registry import load_registry, step_grid_for_model
 from dlb.runner import RunRequest, _resolve_checkpoint_provenance
 from dlb.schema import SampleRecord
 
@@ -473,9 +473,12 @@ class BaseTeacherAdapter:
             raise AdapterError(
                 f"unsupported model/dataset cell: {request.model_id}/{request.dataset_id}"
             )
-        if request.step_count not in registry.step_grids[model.category]:
+        allowed_steps = step_grid_for_model(registry, request.model_id)
+        if request.step_count not in allowed_steps:
+            joined_steps = ",".join(str(step) for step in allowed_steps)
             raise AdapterError(
-                f"invalid step count {request.step_count} for {model.category} category"
+                f"invalid step count {request.step_count} for "
+                f"{request.model_id}/{request.dataset_id}; allowed: {joined_steps}"
             )
         if model.adapter != self.upstream:
             raise AdapterError(

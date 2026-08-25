@@ -30,7 +30,7 @@ from dlb.io import (
     validate_samples,
     write_samples_atomic,
 )
-from dlb.registry import load_registry
+from dlb.registry import load_registry, step_grid_for_model
 from dlb.schema import SampleRecord
 
 
@@ -317,8 +317,13 @@ def _resolve_request(request: RunRequest, root: Path, adapter: SampleAdapter | N
         raise ValueError(f"unknown model/dataset cell: {request.model_id}/{request.dataset_id}") from error
     if support.status != "supported":
         raise ValueError(f"unsupported model/dataset cell: {request.model_id}/{request.dataset_id}")
-    if request.step_count not in registry.step_grids[model.category]:
-        raise ValueError(f"invalid step count {request.step_count} for {model.category} category")
+    allowed_steps = step_grid_for_model(registry, request.model_id)
+    if request.step_count not in allowed_steps:
+        joined_steps = ",".join(str(step) for step in allowed_steps)
+        raise ValueError(
+            f"invalid step count {request.step_count} for "
+            f"{request.model_id}/{request.dataset_id}; allowed: {joined_steps}"
+        )
     if request.environment is not None and request.environment != model.environment:
         raise ValueError("environment assertion differs from canonical registry")
     if request.sample_count <= 0:
@@ -538,8 +543,13 @@ def _validate_registry_request(root: Path, model_id: str, dataset_id: str, step_
         raise ValueError(f"unknown model/dataset cell: {model_id}/{dataset_id}") from error
     if support.status != "supported":
         raise ValueError(f"unsupported model/dataset cell: {model_id}/{dataset_id}")
-    if step_count not in registry.step_grids[model.category]:
-        raise ValueError(f"invalid step count {step_count} for {model.category} category")
+    allowed_steps = step_grid_for_model(registry, model_id)
+    if step_count not in allowed_steps:
+        joined_steps = ",".join(str(step) for step in allowed_steps)
+        raise ValueError(
+            f"invalid step count {step_count} for {model_id}/{dataset_id}; "
+            f"allowed: {joined_steps}"
+        )
     return model.environment
 
 

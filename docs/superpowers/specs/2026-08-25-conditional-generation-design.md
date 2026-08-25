@@ -24,7 +24,7 @@ This protocol is deliberately zero-shot. It is a fair test of whether each train
 
 The current unconditional benchmark remains unchanged: its matrix, result paths, request identity, sample schema, scripts, and aggregate outputs keep their existing behavior.
 
-Conditional generation is an additive benchmark with separate configuration, schemas, artifacts, output paths, evaluation, and aggregation. It covers the same 137 supported model/dataset/step tasks as the current matrix. The existing unsupported RDLM/OWT model/dataset cell remains in a separate explicit unsupported inventory rather than being expanded into step tasks or silently dropped.
+Conditional generation is an additive benchmark with separate configuration, schemas, artifacts, output paths, evaluation, and aggregation. It covers the same 132 supported model/dataset/step tasks as the current matrix. The existing unsupported RDLM/OWT model/dataset cell remains in a separate explicit unsupported inventory rather than being expanded into step tasks or silently dropped.
 
 No upstream baseline repository is modified. Integration stays in this project's adapters and launch wrappers.
 
@@ -194,7 +194,7 @@ For OWT this times the full 1,024-position process with a 960-token generated su
 
 Add `evaluation/conditional_aggregate.py` and a conditional summary command. Aggregation validates before producing tables:
 
-- matrix schema and the expected 137 supported step tasks, plus the explicit RDLM/OWT unsupported inventory record;
+- matrix schema and the expected 132 supported step tasks, plus the explicit RDLM/OWT unsupported inventory record;
 - exact 2,048-record completion schedule per cell;
 - exact prefix preservation in every record;
 - prompt, sample, metric, checkpoint, tokenizer, and timing digest linkage;
@@ -257,7 +257,7 @@ The feature is complete when:
 
 1. Existing unconditional commands and tests remain unchanged and pass.
 2. Both prompt manifests deterministically verify and contain 1,024 unique examples.
-3. The conditional matrix contains exactly 137 supported step tasks, and its separate unsupported inventory explicitly contains RDLM/OWT.
+3. The conditional matrix contains exactly 132 supported step tasks, and its separate unsupported inventory explicitly contains RDLM/OWT.
 4. Every supported cell can generate exactly 2,048 validated records from its existing checkpoint without training.
 5. Every generated record preserves all 64 prefix tokens exactly.
 6. Conditional quality, diversity, and timing artifacts pass provenance and count validation.

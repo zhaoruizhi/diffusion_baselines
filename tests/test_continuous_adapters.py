@@ -298,7 +298,7 @@ def test_rdlm_renders_the_official_sde_sampler_and_saved_asset_trio(
     """Catch RDLM bypassing its official Hydra sampler or omitting saved release assets."""
 
     root = prepare_command_root(tmp_path)
-    item = request("rdlm", "lm1b", steps=32, samples=17)
+    item = request("rdlm", "lm1b", steps=1000, samples=17)
     command = RDLMAdapter().render_command(item, run_dir(root, item), dry_run=True)
     asset_root = root / "checkpoints/official/rdlm/lm1b/LM1B"
 
@@ -323,7 +323,7 @@ def test_rdlm_renders_the_official_sde_sampler_and_saved_asset_trio(
     assert override(command, "exp") == "sample_lm1b"
     assert Path(override(command, "model_path")) == asset_root / "checkpoint.pth"
     assert override(command, "sampling.predictor") == "grw"
-    assert override(command, "sampling.steps") == "32"
+    assert override(command, "sampling.steps") == "1000"
     assert override(command, "sampling.batch_per_gpu") == "8"
     assert override(command, "seed") == "42"
     assert override(command, "ngpus") == "1"
@@ -342,7 +342,7 @@ def test_rdlm_renders_the_official_sde_sampler_and_saved_asset_trio(
 def test_real_render_requires_canonical_checkpoint_bytes(adapter, model: str, dataset: str) -> None:
     """Catch real mode accepting dry-run-only expected paths."""
 
-    item = request(model, dataset)
+    item = request(model, dataset, steps=1000 if model == "rdlm" else 32)
     with pytest.raises(AdapterError, match="checkpoint"):
         adapter.build_command(item, run_dir(ROOT, item))
 
@@ -729,7 +729,7 @@ def test_rdlm_capture_routes_saved_assets_and_uses_bounded_exact_batches(
     assert "TRANSFORMERS_OFFLINE" not in os.environ
 
 
-def test_continuous_cli_dry_run_emits_three_commands_and_one_registry_rejection(
+def test_continuous_cli_dry_run_emits_valid_commands_and_step_override_rejection(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -749,18 +749,22 @@ def test_continuous_cli_dry_run_emits_three_commands_and_one_registry_rejection(
     )
     records = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
 
-    assert result == 0
+    assert result == 1
     assert len(records) == 4
     supported = [record for record in records if record["status"] == "supported"]
     unsupported = [record for record in records if record["status"] == "unsupported"]
+    errors = [record for record in records if record["status"] == "error"]
     assert {(record["model"], record["dataset"]) for record in supported} == {
         ("langflow", "lm1b"),
         ("langflow", "owt"),
-        ("rdlm", "lm1b"),
     }
     assert {(record["model"], record["dataset"]) for record in unsupported} == {
         ("rdlm", "owt"),
     }
+    assert [(record["model"], record["dataset"]) for record in errors] == [
+        ("rdlm", "lm1b")
+    ]
+    assert "invalid step count 32" in errors[0]["reason"]
     assert all(record["command"] for record in supported)
     assert all(record["reason"] for record in unsupported)
     assert all(
@@ -769,5 +773,20 @@ def test_continuous_cli_dry_run_emits_three_commands_and_one_registry_rejection(
         else option(record["command"], "--seed") == "42"
         for record in supported
     )
-    rdlm_command = next(record["command"] for record in supported if record["model"] == "rdlm")
-    assert override(rdlm_command, "sampling.batch_per_gpu") == "8"
+    rdlm_result = command_main(
+        [
+            "--root",
+            str(root),
+            "--models",
+            "rdlm",
+            "--datasets",
+            "lm1b",
+            "--steps",
+            "1000",
+            "--dry-run",
+        ]
+    )
+    assert rdlm_result == 0
+    rdlm_record = json.loads(capsys.readouterr().out.strip())
+    assert rdlm_record["status"] == "supported"
+    assert override(rdlm_record["command"], "sampling.batch_per_gpu") == "8"

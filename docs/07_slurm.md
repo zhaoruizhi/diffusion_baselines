@@ -4,19 +4,19 @@ Slurm 模板不硬编码 partition、GPU 型号、walltime 或内存。请根据
 
 ## 生成 array
 
-先在登录节点创建矩阵，再提交 137 个 array task：
+先在登录节点创建矩阵，再提交 132 个 array task：
 
 ```bash
 python -m dlb.matrix --root "$DLB_ROOT" \
   --output "$DLB_ROOT/results/matrix/generation.tsv"
-sbatch --array=0-136%8 slurm/generate_array.sbatch
+sbatch --array=0-131%8 slurm/generate_array.sbatch
 ```
 
 ## 质量评测和 timing
 
 ```bash
 sbatch slurm/evaluate.sbatch
-sbatch --array=0-136%8 slurm/benchmark_array.sbatch
+sbatch --array=0-131%8 slurm/benchmark_array.sbatch
 ```
 
 `evaluate.sbatch` 使用 `DLB_EVAL_ENV`（默认 `dlb-eval`）；array 模板读取每一行的模型、数据集、steps 和 registry environment，不根据 task id 猜环境。

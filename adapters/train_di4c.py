@@ -85,6 +85,27 @@ def _teacher_initialized_student(config: Any):
     return get_diffusion(config, tokenizer)
 
 
+def _hf_small_initialized_student(loss: str, round: int, config: Any):
+    if round not in range(1, 8):
+        raise ValueError(
+            f"Round value is too large: should be 1 <= round <= 7. Actual value: `{round}`"
+        )
+    if loss not in ("kld", "mse", "tvd"):
+        raise ValueError(f"Valid losses sizes: kld, mse, tvd. Actual value: `{loss}`")
+
+    from sdtt.core.distill.multi_round_sdtt import MultiRoundSDTT
+
+    revision = f"baselines_{loss}_step_{round * 10_000}"
+    # Upstream load_small_student uses student_as_teacher=True, which overwrites
+    # the configured teacher checkpoint with the HF small student backbone.
+    return MultiRoundSDTT.from_pretrained(
+        "jdeschena/sdtt",
+        revision,
+        config=config,
+        student_as_teacher=False,
+    )
+
+
 def _scratch_initialized_student(config: Any):
     from sdtt.models.loading_utils import get_backbone
 
@@ -119,12 +140,11 @@ def _patch_student_loader() -> None:
 
         mode = _student_init_mode(config)
         if mode == "hf_small":
-            try:
-                return original(loss=loss, round=round, config=config, **kwargs)
-            except TypeError:
-                if kwargs:
-                    return original(loss=loss, round=round, config=config)
-                raise
+            if kwargs:
+                raise TypeError(
+                    f"unexpected load_small_student keyword(s): {sorted(kwargs)}"
+                )
+            return _hf_small_initialized_student(loss=loss, round=round, config=config)
         if mode == "teacher":
             return _teacher_initialized_student(config)
         if mode == "scratch":

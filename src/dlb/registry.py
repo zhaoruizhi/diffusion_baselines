@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 MANY_STEPS = [1, 2, 4, 8, 16, 32, 1024]
 FEW_STEPS = [1, 2, 4, 8, 16, 32]
 FIXED_1024_STEPS = [1024]
+RDLM_OFFICIAL_STEPS = [1000, 1024]
 
 MODEL_IDENTIFIERS = {
     "flm": ("many", "dlb-flm", "flm", "flm"),
@@ -61,6 +62,7 @@ class DatasetSupport(RegistryModel):
 
 class ModelRegistryEntry(RegistryModel):
     category: Category
+    step_override: list[int] | None = None
     environment: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
     adapter: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
     source: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
@@ -70,6 +72,11 @@ class ModelRegistryEntry(RegistryModel):
     def require_all_datasets(self) -> "ModelRegistryEntry":
         if set(self.datasets) != {"lm1b", "owt"}:
             raise ValueError("each model must declare lm1b and owt support")
+        if self.step_override is not None:
+            if self.step_override != sorted(set(self.step_override)):
+                raise ValueError("step overrides must be sorted and unique")
+            if any(step <= 0 for step in self.step_override):
+                raise ValueError("step overrides must be positive")
         return self
 
 
@@ -92,6 +99,11 @@ class ExperimentRegistry(RegistryModel):
                 MODEL_IDENTIFIERS[model_id]
             ):
                 raise ValueError(f"registry identifiers do not match {model_id}")
+            if model_id == "rdlm":
+                if model.step_override != RDLM_OFFICIAL_STEPS:
+                    raise ValueError("RDLM must use the official/default step override")
+            elif model.step_override is not None:
+                raise ValueError(f"{model_id} must use its category step grid")
         return self
 
 
@@ -103,3 +115,10 @@ def load_registry(path: Path) -> ExperimentRegistry:
     if not isinstance(document, dict):
         raise ValueError("registry document must be a mapping")
     return ExperimentRegistry.model_validate(document)
+
+
+def step_grid_for_model(registry: ExperimentRegistry, model_id: str) -> list[int]:
+    """Return the canonical step grid for one logical baseline model."""
+
+    model = registry.models[model_id]
+    return list(model.step_override or registry.step_grids[model.category])
