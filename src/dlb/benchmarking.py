@@ -258,6 +258,7 @@ def _metadata(
         policy["precision"] = "bf16-mixed-static-author-policy"
     return {
         "seed": request.seed,
+        "sample_count": request.sample_count,
         "dataset": request.dataset_id,
         "model": request.model_id,
         "steps": request.step_count,

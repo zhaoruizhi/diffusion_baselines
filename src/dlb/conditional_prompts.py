@@ -259,7 +259,7 @@ def build_prompts(root: Path, dataset_id: str, protocol: ConditionalProtocol) ->
     _, source_manifest, vocab_size, source_manifest_path, processed_path = _dataset_contract(
         root, dataset_id, protocol
     )
-    dataset = load_from_disk(processed_path)
+    dataset = load_from_disk(str(processed_path))
     row_count = len(dataset)
     _require_manifest_validation_count(source_manifest, row_count)
     selected = select_source_indices(row_count, protocol.prompt_count, protocol.selection_seed)
@@ -338,7 +338,7 @@ def verify_prompts(root: Path, dataset_id: str, protocol: ConditionalProtocol) -
         root, dataset_id, protocol
     )
     prompts_path, manifest_path = _artifact_paths(root, dataset_id)
-    dataset = load_from_disk(processed_path)
+    dataset = load_from_disk(str(processed_path))
     source_row_count = len(dataset)
     _require_manifest_validation_count(source_manifest, source_row_count)
     manifest = PromptManifest.model_validate(

@@ -70,10 +70,10 @@ def production_protocol():
     return load_protocol(Path(__file__).parents[1] / "configs" / "conditional.yaml")
 
 
-def install_fake_load_from_disk(monkeypatch, *, rows: int) -> list[Path]:
-    observed: list[Path] = []
+def install_fake_load_from_disk(monkeypatch, *, rows: int) -> list[str]:
+    observed: list[str] = []
 
-    def fake_load_from_disk(path: Path) -> TinyValidation:
+    def fake_load_from_disk(path: str) -> TinyValidation:
         observed.append(path)
         return TinyValidation(
             [{"input_ids": [index % 30_522] * 128} for index in range(rows)]
@@ -210,4 +210,29 @@ def test_prompt_cli_uses_processed_validation_without_repacking(monkeypatch, tmp
     observed = install_fake_load_from_disk(monkeypatch, rows=2048)
 
     assert build_main(["--root", str(tmp_path), "--dataset", "lm1b"]) == 0
-    assert observed == [tmp_path / "data/processed/lm1b-bert-128/validation"]
+    assert observed == [str(tmp_path / "data/processed/lm1b-bert-128/validation")]
+
+
+def test_prompt_builder_passes_string_paths_to_datasets(monkeypatch, tmp_path: Path) -> None:
+    """Catch datasets/fsspec combinations that reject pathlib.Path values."""
+
+    root = make_prompt_root(tmp_path)
+    observed: list[str] = []
+
+    def fake_load_from_disk(path: str) -> TinyValidation:
+        if not isinstance(path, str):
+            raise TypeError("argument of type 'PosixPath' is not iterable")
+        observed.append(path)
+        return TinyValidation(
+            [{"input_ids": [index % 30_522] * 128} for index in range(2048)]
+        )
+
+    monkeypatch.setattr("dlb.conditional_prompts.load_from_disk", fake_load_from_disk)
+
+    build_prompts(root, "lm1b", production_protocol())
+    verify_prompts(root, "lm1b", production_protocol())
+
+    assert observed == [
+        str(tmp_path / "data/processed/lm1b-bert-128/validation"),
+        str(tmp_path / "data/processed/lm1b-bert-128/validation"),
+    ]

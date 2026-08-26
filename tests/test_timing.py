@@ -567,6 +567,68 @@ def test_flm_precision_policy_binds_checkpoint_revision_and_config_bytes(
     )
 
 
+def test_conditional_benchmark_metadata_binds_sample_count(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Catch conditional timing metadata that cannot pass matrix provenance checks."""
+
+    destination = "official/flm/owt"
+    config_path = tmp_path / "checkpoints" / destination / "config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "torch_dtype": "float32",
+                "architectures": ["DiTForDiffusionLM"],
+                "auto_map": {"AutoModelForMaskedLM": "modeling_dit.DiTForDiffusionLM"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    resource = SimpleNamespace(
+        destination=destination,
+        source=SimpleNamespace(repo_id="owner/flm", revision="e" * 40),
+    )
+    monkeypatch.setattr(
+        benchmarking_module,
+        "load_checkpoint_manifest",
+        lambda path: SimpleNamespace(resources={"flm_owt_hf": resource}),
+    )
+    request = RunRequest(
+        run_id="benchmark-flm-owt-steps-32",
+        model_id="flm",
+        dataset_id="owt",
+        step_count=32,
+        seed=42,
+        sample_count=2048,
+        config_sha256="c" * 64,
+        source_sha256="a" * 40,
+        checkpoint_sha256="b" * 64,
+        checkpoint_lock_id="locked",
+        checkpoint_selection={"resource": "flm_owt_hf"},
+        checkpoint_teacher_family="continuous_flm",
+        adapter_identity="fixture:v1",
+        environment="dlb-flm",
+        generation_mode="conditional_prefix",
+        conditioning_manifest="/tmp/conditional-owt-c64.json",
+        conditioning_manifest_sha256="d" * 64,
+        conditioning_config_sha256="f" * 64,
+        prefix_length=64,
+        evaluation_continuation_length=64,
+        prompt_count=1024,
+        diversity_prompt_count=256,
+        completions_per_diversity_prompt=5,
+        completion_schedule="1024x1+256x4",
+    )
+
+    metadata = benchmarking_module._metadata(
+        tmp_path, request, ADAPTERS["flm"], "f" * 32
+    )
+
+    assert metadata["sample_count"] == 2048
+    assert metadata["generation_mode"] == "conditional_prefix"
+
+
 def test_flm_precision_policy_fails_closed_without_checkpoint_config(
     monkeypatch, tmp_path: Path
 ) -> None:
