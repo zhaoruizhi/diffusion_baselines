@@ -10,8 +10,11 @@ dependencies:
   - pytorch-cuda=12.4
   - cuda-toolkit=12.4
   - pip:
+      - datasets==3.6.0
       - einops==0.8.1
+      - fsspec==2025.3.0
       - huggingface-hub==0.36.0
+      - pyarrow==20.0.0
       - pydantic==2.12.4
       - pyyaml==6.0.2
       - safetensors==0.5.3

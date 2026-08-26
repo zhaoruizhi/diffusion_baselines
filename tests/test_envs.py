@@ -134,6 +134,16 @@ def test_project_runtime_dependencies_are_available_in_every_environment():
         assert packages["pyyaml"] == "6.0.2", name
 
 
+def test_langflow_environment_includes_conditional_prompt_data_dependencies():
+    """Catch conditional runs failing before LangFlow loads because datasets is absent."""
+
+    packages = pinned_pip_dependencies(load_environments()["langflow"])
+
+    assert packages["datasets"] == "3.6.0"
+    assert packages["fsspec"] == "2025.3.0"
+    assert packages["pyarrow"] == "20.0.0"
+
+
 def test_python39_pydantic_environments_include_annotation_backport():
     environments = load_environments()
 
@@ -588,8 +598,8 @@ def test_verify_all_preserves_unhealthy_probe_when_manager_adds_diagnostic(
 
     records = [json.loads(line) for line in completed.stdout.splitlines()]
     assert completed.returncode != 0
-    assert records[0]["imports"]["einops"] is False
-    assert records[0]["import_errors"] == {"einops": "simulated import failure"}
+    assert records[0]["imports"]["datasets"] is False
+    assert records[0]["import_errors"] == {"datasets": "simulated import failure"}
     assert "CondaError" not in completed.stdout
     assert "CondaError" not in completed.stderr
 
@@ -680,7 +690,10 @@ def test_verify_all_checks_the_complete_method_import_mapping(fake_conda, tmp_pa
             "hydra", "lightning", "numpy", "omegaconf", "requests", "rich", "scipy",
             "timm", "tokenizers", "torchmetrics", "tqdm", "transformers", "triton", "wandb",
         },
-        "dlb-langflow": {"einops", "huggingface_hub", "safetensors", "transformers"},
+        "dlb-langflow": {
+            "datasets", "einops", "fsspec", "huggingface_hub", "pyarrow",
+            "safetensors", "transformers",
+        },
         "dlb-duo": {
             "datasets", "einops", "flash_attn", "fsspec", "h5py", "huggingface_hub",
             "hydra", "lightning", "numpy", "omegaconf", "requests", "rich", "scipy", "timm",
