@@ -22,6 +22,7 @@ import yaml
 
 from dlb.io import atomic_json_write
 from dlb.adapters.conditional_runtime import (
+    candi_prompt_mask,
     clamp_token_prefix,
     embedding_project_fn,
     load_conditioning_batch,
@@ -634,10 +635,8 @@ def _capture_teacher(
             original_generate = self.generate_samples
 
             def generate(*args, **kwargs):
-                import torch
-
                 kwargs["prompt_tokens"] = batch.prefix_token_ids
-                kwargs["prompt_mask"] = torch.ones_like(batch.prefix_token_ids, dtype=torch.bool)
+                kwargs["prompt_mask"] = candi_prompt_mask(batch.prefix_token_ids)
                 return original_generate(*args, **kwargs)
 
             stack.enter_context(patched_attribute(self, "generate_samples", generate))

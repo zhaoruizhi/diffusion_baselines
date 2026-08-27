@@ -69,6 +69,17 @@ def test_embedding_projector_writes_clean_prefix_and_preserves_suffix():
     assert torch.equal(state[:, 2:, :], suffix)
 
 
+def test_candi_prompt_mask_supports_upstream_subtraction():
+    from dlb.adapters.conditional_runtime import candi_prompt_mask
+
+    prefix = torch.tensor([[1, 2, 3]])
+
+    mask = candi_prompt_mask(prefix)
+
+    assert mask.dtype == torch.float32
+    assert torch.equal(1 - mask, torch.zeros_like(mask))
+
+
 def test_projectors_reject_incompatible_shapes():
     from dlb.adapters.conditional_runtime import (
         embedding_project_fn,

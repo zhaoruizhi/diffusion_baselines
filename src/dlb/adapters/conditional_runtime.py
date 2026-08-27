@@ -186,6 +186,15 @@ def embedding_project_fn(clean_embeddings):
     return project
 
 
+def candi_prompt_mask(prefix_ids):
+    """Return the numeric prompt mask expected by CANDI's upstream sampler."""
+
+    torch = _require_torch()
+    if getattr(prefix_ids, "ndim", None) != 2:
+        raise ValueError("CANDI prompt prefix must be rank two")
+    return torch.ones_like(prefix_ids, dtype=torch.float32)
+
+
 @contextmanager
 def patched_attribute(owner: object, name: str, replacement: object) -> Iterator[None]:
     """Temporarily replace an attribute and always restore the original value."""
