@@ -265,8 +265,9 @@ def load_conditioning_batch(
     manifest = PromptManifest.model_validate(
         json.loads(manifest_path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
     )
-    if manifest.vocabulary_size != vocab_size:
-        raise ValueError("conditioning vocabulary size differs from prompt manifest")
+    manifest_vocab_size = int(manifest.vocabulary_size)
+    if vocab_size < manifest_vocab_size:
+        raise ValueError("conditioning runtime vocabulary size is smaller than prompt manifest")
     limit = _schedule_limit(manifest, completion_id)
     if prompt_start + batch_size > limit:
         raise ValueError("conditioning batch crosses its completion schedule boundary")
@@ -275,7 +276,7 @@ def load_conditioning_batch(
     prefix_rows = [record.prefix_token_ids for record in selected]
     reference_rows = [record.reference_token_ids for record in selected]
     for row in (*prefix_rows, *reference_rows):
-        if len(row) != 64 or any(token_id >= vocab_size for token_id in row):
+        if len(row) != 64 or any(token_id >= manifest_vocab_size for token_id in row):
             raise ValueError("conditioning prompt tokens violate length or vocabulary bounds")
     return ConditioningBatch(
         prompt_ids=tuple(record.prompt_id for record in selected),

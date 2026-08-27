@@ -183,3 +183,34 @@ def test_load_conditioning_batch_follows_completion_boundaries(tmp_path: Path):
             device="cpu",
             vocab_size=30522,
         )
+
+
+def test_load_conditioning_batch_accepts_runtime_vocab_with_extra_mask_dimension(tmp_path: Path):
+    from dlb.adapters.conditional_runtime import load_conditioning_batch
+    from dlb.io import sha256_file
+
+    manifest = _write_manifest_tree(tmp_path)
+    digest = sha256_file(manifest)
+
+    batch = load_conditioning_batch(
+        manifest,
+        digest,
+        completion_id=0,
+        prompt_start=0,
+        batch_size=1,
+        device="cpu",
+        vocab_size=30523,
+    )
+
+    assert batch.prefix_token_ids.tolist() == [[0] * 64]
+
+    with pytest.raises(ValueError, match="smaller than prompt manifest"):
+        load_conditioning_batch(
+            manifest,
+            digest,
+            completion_id=0,
+            prompt_start=0,
+            batch_size=1,
+            device="cpu",
+            vocab_size=30521,
+        )
