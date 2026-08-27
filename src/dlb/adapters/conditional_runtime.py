@@ -186,13 +186,27 @@ def embedding_project_fn(clean_embeddings):
     return project
 
 
-def candi_prompt_mask(prefix_ids):
-    """Return the numeric prompt mask expected by CANDI's upstream sampler."""
+def candi_prompt_conditioning(prefix_ids, *, sequence_length: int):
+    """Return full-canvas prompt tokens and numeric mask for CANDI's sampler."""
 
     torch = _require_torch()
     if getattr(prefix_ids, "ndim", None) != 2:
         raise ValueError("CANDI prompt prefix must be rank two")
-    return torch.ones_like(prefix_ids, dtype=torch.float32)
+    if type(sequence_length) is not int or sequence_length < int(prefix_ids.shape[1]):
+        raise ValueError("CANDI prompt sequence_length cannot be shorter than prefix")
+    prompt_tokens = torch.zeros(
+        (prefix_ids.shape[0], sequence_length),
+        dtype=prefix_ids.dtype,
+        device=prefix_ids.device,
+    )
+    prompt_tokens[:, : prefix_ids.shape[1]] = prefix_ids
+    prompt_mask = torch.zeros(
+        (prefix_ids.shape[0], sequence_length),
+        dtype=torch.float32,
+        device=prefix_ids.device,
+    )
+    prompt_mask[:, : prefix_ids.shape[1]] = 1.0
+    return prompt_tokens, prompt_mask
 
 
 @contextmanager

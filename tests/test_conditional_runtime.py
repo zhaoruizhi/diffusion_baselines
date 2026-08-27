@@ -70,14 +70,19 @@ def test_embedding_projector_writes_clean_prefix_and_preserves_suffix():
 
 
 def test_candi_prompt_mask_supports_upstream_subtraction():
-    from dlb.adapters.conditional_runtime import candi_prompt_mask
+    from dlb.adapters.conditional_runtime import candi_prompt_conditioning
 
     prefix = torch.tensor([[1, 2, 3]])
 
-    mask = candi_prompt_mask(prefix)
+    prompt_tokens, mask = candi_prompt_conditioning(prefix, sequence_length=5)
 
+    assert prompt_tokens.tolist() == [[1, 2, 3, 0, 0]]
     assert mask.dtype == torch.float32
-    assert torch.equal(1 - mask, torch.zeros_like(mask))
+    assert mask.tolist() == [[1.0, 1.0, 1.0, 0.0, 0.0]]
+    assert torch.equal(1 - mask[:, :3], torch.zeros_like(mask[:, :3]))
+
+    with pytest.raises(ValueError, match="shorter than prefix"):
+        candi_prompt_conditioning(prefix, sequence_length=2)
 
 
 def test_projectors_reject_incompatible_shapes():
