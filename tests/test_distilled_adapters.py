@@ -213,7 +213,7 @@ def test_di4c_binds_teacher_family_and_dataset_intermediate_checkpoint(
         assert "official/mdlm_di4c" not in " ".join(command)
 
 
-def test_owt_di4c_checkpoints_allow_missing_embedded_config(
+def test_di4c_checkpoints_allow_missing_embedded_config(
     tmp_path: Path,
 ) -> None:
     root = prepare_distilled_render_root(tmp_path)
@@ -233,7 +233,7 @@ def test_owt_di4c_checkpoints_allow_missing_embedded_config(
 
     assert option(official_owt_command, "--allow-missing-embedded-config") == "true"
     assert option(reproduced_owt_command, "--allow-missing-embedded-config") == "true"
-    assert "--allow-missing-embedded-config" not in recipe_lm1b_command
+    assert option(recipe_lm1b_command, "--allow-missing-embedded-config") == "true"
 
 
 def test_di4c_rejects_cross_family_model_identity_before_checkpoint_resolution() -> None:

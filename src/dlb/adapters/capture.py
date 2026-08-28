@@ -22,6 +22,7 @@ import yaml
 
 from dlb.io import atomic_json_write
 from dlb.adapters.conditional_runtime import (
+    adapt_candi_generate_sample_prompt,
     candi_prompt_conditioning,
     clamp_token_prefix,
     embedding_project_fn,
@@ -633,6 +634,14 @@ def _capture_teacher(
             stack.enter_context(patched_attribute(self, "forward", forward))
         elif family == "candi":
             original_generate = self.generate_samples
+            original_generate_sample_prompt = self.generate_sample_prompt
+            stack.enter_context(
+                patched_attribute(
+                    self,
+                    "generate_sample_prompt",
+                    adapt_candi_generate_sample_prompt(original_generate_sample_prompt),
+                )
+            )
 
             def generate(*args, **kwargs):
                 prompt_tokens, prompt_mask = candi_prompt_conditioning(

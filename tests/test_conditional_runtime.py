@@ -85,6 +85,29 @@ def test_candi_prompt_mask_supports_upstream_subtraction():
         candi_prompt_conditioning(prefix, sequence_length=2)
 
 
+def test_candi_prompt_adapter_returns_bool_clean_mask_after_float_arithmetic():
+    from dlb.adapters.conditional_runtime import (
+        adapt_candi_generate_sample_prompt,
+        candi_prompt_conditioning,
+    )
+
+    prefix = torch.tensor([[1, 2, 3]])
+    prompt_tokens, mask = candi_prompt_conditioning(prefix, sequence_length=5)
+    state = torch.zeros(1, 5, 8)
+
+    def original(prompt_tokens, x, prompt_mask):
+        assert torch.equal(1 - prompt_mask[:, :3], torch.zeros_like(prompt_mask[:, :3]))
+        return x, prompt_mask
+
+    _, clean_mask = adapt_candi_generate_sample_prompt(original)(
+        prompt_tokens, state, mask
+    )
+
+    assert clean_mask.dtype == torch.bool
+    assert torch.equal(~clean_mask[:, :3], torch.zeros_like(clean_mask[:, :3]))
+    assert clean_mask.tolist() == [[True, True, True, False, False]]
+
+
 def test_projectors_reject_incompatible_shapes():
     from dlb.adapters.conditional_runtime import (
         embedding_project_fn,

@@ -209,6 +209,22 @@ def candi_prompt_conditioning(prefix_ids, *, sequence_length: int):
     return prompt_tokens, prompt_mask
 
 
+def adapt_candi_generate_sample_prompt(original):
+    """Adapt CANDI's prompt hook across its mixed numeric/bool mask uses."""
+
+    torch = _require_torch()
+
+    def generate_sample_prompt(prompt_tokens, x, prompt_mask):
+        numeric_mask = prompt_mask.to(device=x.device, dtype=x.dtype)
+        prompt_tokens = prompt_tokens.to(device=x.device)
+        prompted, clean_mask = original(prompt_tokens, x, numeric_mask)
+        if clean_mask.dtype != torch.bool:
+            clean_mask = clean_mask.to(dtype=torch.bool)
+        return prompted, clean_mask
+
+    return generate_sample_prompt
+
+
 @contextmanager
 def patched_attribute(owner: object, name: str, replacement: object) -> Iterator[None]:
     """Temporarily replace an attribute and always restore the original value."""

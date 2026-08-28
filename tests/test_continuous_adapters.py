@@ -483,6 +483,84 @@ def test_rdlm_retokenizes_out_of_vocab_upstream_rows_offline_and_records_why(
     assert metadata["token_ids_transformation"]["reason"] == "upstream_ids_outside_canonical_vocab"
 
 
+def test_rdlm_conditional_retokenizes_suffix_out_of_vocab_and_preserves_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Catch RDLM conditional capture rejecting base-vocabulary suffix IDs."""
+
+    class FakeTokenizer:
+        eos_token = "[SEP]"
+        pad_token = "[PAD]"
+        pad_token_id = 0
+
+        def __call__(self, texts, **settings):
+            assert texts == ["generated continuation"]
+            assert settings["max_length"] == 64
+            return {"input_ids": [[22] * 64]}
+
+    class FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(name, **settings):
+            assert name == "bert-base-uncased"
+            assert settings == {
+                "revision": "86b5e0934494bd15c9632b12f734a8a67f723594",
+                "local_files_only": True,
+            }
+            return FakeTokenizer()
+
+    monkeypatch.setitem(
+        sys.modules, "transformers", SimpleNamespace(AutoTokenizer=FakeAutoTokenizer)
+    )
+    root = prepare_conversion_root(tmp_path)
+    item = canonical_conversion_request(root, request("rdlm", "lm1b", steps=1000, samples=1))
+    item = replace(
+        item,
+        generation_mode="conditional_prefix",
+        prefix_length=64,
+        evaluation_continuation_length=64,
+        prompt_count=1024,
+        diversity_prompt_count=256,
+        completions_per_diversity_prompt=5,
+        completion_schedule="quality_then_diversity_v1",
+    )
+    output_dir = run_dir(root, item)
+    prefix = [1] * 64
+    suffix = [35008] + [2] * 63
+    record = {
+        "sample_id": 0,
+        "text": "fixed prefix generated continuation",
+        "token_ids": prefix + suffix,
+        "prompt_id": 0,
+        "completion_id": 0,
+        "source_index": 100,
+        "prefix_token_ids": prefix,
+        "reference_token_ids": [3] * 64,
+        "full_token_ids": prefix + suffix,
+        "prefix_text": "fixed prefix",
+        "continuation_text": "generated continuation",
+        "reference_text": "source continuation",
+        "full_text": "fixed prefix generated continuation",
+        "prefix_exact_match": True,
+    }
+    write_capture(output_dir / "upstream_token_ids.json", 1, 128)
+    (output_dir / "upstream_token_ids.json").write_text(
+        json.dumps({"schema": "dlb-upstream-token-capture-v1", "samples": [record]}),
+        encoding="utf-8",
+    )
+
+    records = list(RDLMAdapter().convert_outputs(item, output_dir))
+    metadata = json.loads((output_dir / "conversion_metadata.json").read_text())
+
+    assert records[0].prefix_token_ids == prefix
+    assert records[0].continuation_token_ids == [22] * 64
+    assert records[0].full_token_ids == prefix + [22] * 64
+    assert records[0].prefix_exact_match is True
+    assert metadata["token_ids_source"] == "retokenized_conditional_suffix"
+    assert metadata["token_ids_transformation"]["reason"] == (
+        "upstream_ids_outside_canonical_vocab"
+    )
+
+
 def test_shared_capture_runs_langflow_with_locked_offline_tokenizer_and_records_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

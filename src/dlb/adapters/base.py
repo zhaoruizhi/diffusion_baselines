@@ -335,7 +335,11 @@ class BaseTeacherAdapter:
         """Convert an exact project capture produced around a pinned sampler."""
 
         if request.generation_mode == "conditional_prefix":
-            return self._convert_conditional_capture_outputs(request, run_dir)
+            return self._convert_conditional_capture_outputs(
+                request,
+                run_dir,
+                retokenize_inexact_rows=retokenize_inexact_rows,
+            )
         root, sequence_length, _ = self._validate_conversion_request(request, run_dir)
         self._require_conversion_provenance(root, request)
         capture_path = run_dir.resolve() / "upstream_token_ids.json"
@@ -410,7 +414,11 @@ class BaseTeacherAdapter:
         return records
 
     def _convert_conditional_capture_outputs(
-        self, request: RunRequest, run_dir: Path
+        self,
+        request: RunRequest,
+        run_dir: Path,
+        *,
+        retokenize_inexact_rows: bool = False,
     ) -> Iterable[ConditionalSampleRecord]:
         """Convert a prompt-enriched capture into conditional sample records."""
 
@@ -421,6 +429,63 @@ class BaseTeacherAdapter:
         dataset = self._load_data_contract(root, request.dataset_id)
         tokenizer_name = dataset["tokenizer"]
         vocab_size = self._TOKENIZER_VOCAB_SIZES[tokenizer_name]
+        prefix_lengths: set[int] = set()
+        retokenize_reason = None
+        for index, item in enumerate(capture):
+            full = item["full_token_ids"]
+            prefix = item["prefix_token_ids"]
+            reference = item["reference_token_ids"]
+            if not isinstance(full, list) or not isinstance(prefix, list) or not isinstance(reference, list):
+                raise AdapterError(f"conditional capture record {index} has invalid token fields")
+            prefix_lengths.add(len(prefix))
+            if len(prefix) >= sequence_length:
+                raise AdapterError(f"conditional capture record {index} has invalid prefix length")
+            if len(full) >= len(prefix) and full[: len(prefix)] != prefix:
+                raise AdapterError(f"conditional capture record {index} has prefix mismatch")
+            if any(
+                type(token) is not int or token < 0 or token >= vocab_size
+                for token in [*prefix, *reference]
+            ):
+                raise AdapterError(f"conditional capture record {index} has token outside vocabulary")
+            reason = (
+                self._retokenize_reason([full], sequence_length, vocab_size)
+                if retokenize_inexact_rows
+                else None
+            )
+            if reason is not None and retokenize_reason is None:
+                retokenize_reason = reason
+        if len(prefix_lengths) != 1:
+            raise AdapterError("conditional capture records have inconsistent prefix lengths")
+        prefix_length = next(iter(prefix_lengths), 0)
+        continuation_length = sequence_length - prefix_length
+        retokenized_continuations: list[list[int]] | None = None
+        token_ids_source = "upstream_conditional_capture"
+        token_ids_transformation: dict[str, object] = {
+            "max_length": sequence_length,
+            "operation": "validated_exact_length",
+        }
+        if retokenize_reason is not None:
+            texts: list[str] = []
+            for index, item in enumerate(capture):
+                text = item.get("continuation_text")
+                if not isinstance(text, str) or not text.strip():
+                    raise AdapterError(
+                        f"conditional capture record {index} has empty continuation text"
+                    )
+                texts.append(text)
+            retokenized_continuations, suffix_transformation = self._retokenize(
+                root,
+                request.dataset_id,
+                texts,
+                continuation_length,
+            )
+            token_ids_source = "retokenized_conditional_suffix"
+            token_ids_transformation = {
+                **suffix_transformation,
+                "operation": "retokenized_continuation_only",
+                "reason": retokenize_reason,
+                "preserved_prefix_tokens": prefix_length,
+            }
         records: list[ConditionalSampleRecord] = []
         for index, item in enumerate(capture):
             full = item["full_token_ids"]
@@ -428,18 +493,28 @@ class BaseTeacherAdapter:
             reference = item["reference_token_ids"]
             if not isinstance(full, list) or not isinstance(prefix, list) or not isinstance(reference, list):
                 raise AdapterError(f"conditional capture record {index} has invalid token fields")
-            if len(full) != sequence_length:
-                raise AdapterError(
-                    f"conditional capture record {index} has {len(full)} full tokens, "
-                    f"expected {sequence_length}"
-                )
-            if any(
-                type(token) is not int or token < 0 or token >= vocab_size
-                for token in [*full, *prefix, *reference]
-            ):
-                raise AdapterError(f"conditional capture record {index} has token outside vocabulary")
-            if full[: len(prefix)] != prefix:
-                raise AdapterError(f"conditional capture record {index} has prefix mismatch")
+            if retokenized_continuations is None:
+                if len(full) != sequence_length:
+                    raise AdapterError(
+                        f"conditional capture record {index} has {len(full)} full tokens, "
+                        f"expected {sequence_length}"
+                    )
+                if any(
+                    type(token) is not int or token < 0 or token >= vocab_size
+                    for token in full
+                ):
+                    raise AdapterError(f"conditional capture record {index} has token outside vocabulary")
+                continuation = full[len(prefix) :]
+            else:
+                continuation = retokenized_continuations[index]
+                if any(
+                    type(token) is not int or token < 0 or token >= vocab_size
+                    for token in continuation
+                ):
+                    raise AdapterError(
+                        f"conditional capture record {index} retokenized outside vocabulary"
+                    )
+                full = prefix + continuation
             continuation = full[len(prefix) :]
             records.append(
                 ConditionalSampleRecord(
@@ -469,7 +544,8 @@ class BaseTeacherAdapter:
                 "requested_samples": request.sample_count,
                 "trimmed_samples": 0,
                 "trim_policy": "none_exact_conditional_schedule",
-                "token_ids_source": "upstream_conditional_capture",
+                "token_ids_source": token_ids_source,
+                "token_ids_transformation": token_ids_transformation,
                 "tokenizer": tokenizer_name,
                 "tokenizer_revision": self._tokenizer_revision(root, tokenizer_name),
                 "checkpoint_sha256": request.checkpoint_sha256,
