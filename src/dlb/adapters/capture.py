@@ -339,6 +339,14 @@ def _duo_canonical_logits_vocab_size(model: object) -> int | None:
     return None
 
 
+def _duo_canonical_sampler_vocab_size(owner: object) -> int | None:
+    size = _duo_canonical_logits_vocab_size(getattr(owner, "backbone", None))
+    current = getattr(owner, "vocab_size", None)
+    if size is not None and current == size + 1:
+        return size
+    return None
+
+
 def _adapt_hf_masked_lm_backbone(model: object) -> object:
     forward = getattr(model, "forward", None)
     if not callable(forward):
@@ -610,6 +618,9 @@ def _capture_teacher(
 
                 stack.enter_context(patched_attribute(self, name, update))
         elif family == "duo":
+            sampler_vocab_size = _duo_canonical_sampler_vocab_size(self)
+            if sampler_vocab_size is not None:
+                stack.enter_context(patched_attribute(self, "vocab_size", sampler_vocab_size))
             project = token_project_fn(batch.prefix_token_ids)
             if hasattr(self, "prior_sample"):
                 original_prior = self.prior_sample

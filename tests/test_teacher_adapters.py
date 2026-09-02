@@ -103,6 +103,20 @@ def test_hf_masked_lm_adapter_only_truncates_duo_extra_vocab_class() -> None:
     assert other_logits.shape == (2, 3, 50_258)
 
 
+def test_duo_sampler_vocab_uses_canonical_gpt2_size_when_tokenizer_adds_pad() -> None:
+    owner = SimpleNamespace(
+        vocab_size=50_258,
+        backbone=SimpleNamespace(
+            config=SimpleNamespace(model_type="DUO", vocab_size=50_258)
+        ),
+    )
+
+    assert capture_module._duo_canonical_sampler_vocab_size(owner) == 50_257
+
+    owner.vocab_size = 50_257
+    assert capture_module._duo_canonical_sampler_vocab_size(owner) is None
+
+
 def prepare_conversion_root(tmp_path: Path) -> Path:
     (tmp_path / "artifacts").mkdir()
     (tmp_path / "configs").mkdir()
