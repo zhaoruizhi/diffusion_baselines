@@ -26,6 +26,21 @@ class SourceTokenizer:
         raise ValueError(f"unexpected decoded row length {len(row)}")
 
 
+class WhitespaceSuffixTokenizer:
+    def decode(self, token_ids, **kwargs):
+        del kwargs
+        row = list(token_ids)
+        if len(row) == 64 and set(row) == {1}:
+            return "prompt"
+        if len(row) == 64 and set(row) == {4}:
+            return " \n\t"
+        if len(row) == 64 and set(row) == {3}:
+            return "reference"
+        if len(row) == 128 and row[:64] == [1] * 64 and row[64:] == [4] * 64:
+            return "prompt \n\t"
+        raise ValueError(f"unexpected decoded row length {len(row)}")
+
+
 class ScorerTokenizer:
     def __call__(self, texts, **kwargs):
         rows = {
@@ -106,3 +121,16 @@ def test_conditional_texts_decode_only_evaluation_suffix_for_long_canvas() -> No
     assert decoded[0].generated_suffix == "generated"
     assert decoded[0].reference_suffix == "reference"
     assert decoded[0].prefix_and_generated_suffix == "prompt generated"
+
+
+def test_conditional_texts_preserves_whitespace_only_suffix() -> None:
+    """Catch valid whitespace token suffixes being rejected as empty text."""
+
+    value = record()
+    value.continuation_token_ids[:] = [4] * 64
+    value.full_token_ids[:] = value.prefix_token_ids + value.continuation_token_ids
+
+    decoded = conditional_texts([value], WhitespaceSuffixTokenizer())
+
+    assert decoded[0].generated_suffix == " \n\t"
+    assert decoded[0].prefix_and_generated_suffix == "prompt \n\t"

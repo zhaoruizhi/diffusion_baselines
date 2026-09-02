@@ -119,7 +119,7 @@ def _decode(tokenizer: object, token_ids: Sequence[int]) -> str:
         skip_special_tokens=False,
         clean_up_tokenization_spaces=True,
     )
-    if not isinstance(text, str) or not text.strip():
+    if not isinstance(text, str) or text == "":
         raise ValueError("conditional decoded text is empty")
     return text
 
