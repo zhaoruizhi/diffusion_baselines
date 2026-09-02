@@ -326,6 +326,19 @@ def _offline_huggingface():
                 os.environ[name] = value
 
 
+def _duo_canonical_logits_vocab_size(model: object) -> int | None:
+    config = getattr(model, "config", None)
+    model_type = getattr(config, "model_type", None)
+    vocab_size = getattr(config, "vocab_size", None)
+    if (
+        isinstance(model_type, str)
+        and model_type.lower() == "duo"
+        and vocab_size == 50_258
+    ):
+        return 50_257
+    return None
+
+
 def _adapt_hf_masked_lm_backbone(model: object) -> object:
     forward = getattr(model, "forward", None)
     if not callable(forward):
@@ -350,6 +363,14 @@ def _adapt_hf_masked_lm_backbone(model: object) -> object:
             if module_base is not object:
                 super().__init__()
             self.inner = inner
+            self._canonical_logits_vocab_size = _duo_canonical_logits_vocab_size(inner)
+
+        def _canonical_logits(self, logits):
+            size = self._canonical_logits_vocab_size
+            shape = getattr(logits, "shape", ())
+            if size is not None and shape and shape[-1] == size + 1:
+                return logits[..., :size]
+            return logits
 
         def forward(self, *args, **kwargs):
             if "x" in kwargs:
@@ -367,9 +388,9 @@ def _adapt_hf_masked_lm_backbone(model: object) -> object:
             call = self.inner if callable(self.inner) else self.inner.forward
             output = call(*args, **kwargs)
             if hasattr(output, "logits"):
-                return output.logits
+                return self._canonical_logits(output.logits)
             if isinstance(output, tuple) and output:
-                return output[0]
+                return self._canonical_logits(output[0])
             return output
 
         def __getattr__(self, name: str) -> object:

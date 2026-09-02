@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+import dlb.adapters.capture as capture_module
 from dlb.adapters.base import AdapterError
 from dlb.adapters.candi import CANDIAdapter
 from dlb.adapters.duo import DuoAdapter
@@ -49,6 +50,45 @@ def override(command: list[str], key: str) -> str:
     values = [argument[len(prefix) :] for argument in command if argument.startswith(prefix)]
     assert len(values) == 1, (key, command)
     return values[0]
+
+
+def test_hf_masked_lm_adapter_only_truncates_duo_extra_vocab_class() -> None:
+    """Catch Duo's HF checkpoint leaking its non-tokenizer runtime class into sampling."""
+
+    class FakeLogits:
+        def __init__(self, last_dim: int):
+            self.shape = (2, 3, last_dim)
+
+        def __getitem__(self, key):
+            assert key == (Ellipsis, slice(None, 50_257, None))
+            return FakeLogits(50_257)
+
+    class FakeMaskedLM:
+        def __init__(self, *, model_type: str):
+            self.config = SimpleNamespace(model_type=model_type, vocab_size=50_258)
+
+        def forward(self, input_ids, timesteps):
+            del input_ids, timesteps
+            return SimpleNamespace(logits=FakeLogits(50_258))
+
+    duo = capture_module._adapt_hf_masked_lm_backbone(
+        FakeMaskedLM(model_type="DUO")
+    )
+    other = capture_module._adapt_hf_masked_lm_backbone(
+        FakeMaskedLM(model_type="MDLM")
+    )
+
+    duo_logits = duo(
+        x=[[0, 0, 0], [0, 0, 0]],
+        sigma=[1, 1],
+    )
+    other_logits = other(
+        x=[[0, 0, 0], [0, 0, 0]],
+        sigma=[1, 1],
+    )
+
+    assert duo_logits.shape == (2, 3, 50_257)
+    assert other_logits.shape == (2, 3, 50_258)
 
 
 def prepare_conversion_root(tmp_path: Path) -> Path:
