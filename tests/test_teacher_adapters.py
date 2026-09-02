@@ -64,15 +64,22 @@ def test_hf_masked_lm_adapter_only_truncates_duo_extra_vocab_class() -> None:
             return FakeLogits(50_257)
 
     class FakeMaskedLM:
-        def __init__(self, *, model_type: str):
+        def __init__(self, *, model_type: str, bare_logits: bool = False):
             self.config = SimpleNamespace(model_type=model_type, vocab_size=50_258)
+            self.bare_logits = bare_logits
 
         def forward(self, input_ids, timesteps):
             del input_ids, timesteps
-            return SimpleNamespace(logits=FakeLogits(50_258))
+            logits = FakeLogits(50_258)
+            if self.bare_logits:
+                return logits
+            return SimpleNamespace(logits=logits)
 
     duo = capture_module._adapt_hf_masked_lm_backbone(
         FakeMaskedLM(model_type="DUO")
+    )
+    duo_bare = capture_module._adapt_hf_masked_lm_backbone(
+        FakeMaskedLM(model_type="DUO", bare_logits=True)
     )
     other = capture_module._adapt_hf_masked_lm_backbone(
         FakeMaskedLM(model_type="MDLM")
@@ -82,12 +89,17 @@ def test_hf_masked_lm_adapter_only_truncates_duo_extra_vocab_class() -> None:
         x=[[0, 0, 0], [0, 0, 0]],
         sigma=[1, 1],
     )
+    duo_bare_logits = duo_bare(
+        x=[[0, 0, 0], [0, 0, 0]],
+        sigma=[1, 1],
+    )
     other_logits = other(
         x=[[0, 0, 0], [0, 0, 0]],
         sigma=[1, 1],
     )
 
     assert duo_logits.shape == (2, 3, 50_257)
+    assert duo_bare_logits.shape == (2, 3, 50_257)
     assert other_logits.shape == (2, 3, 50_258)
 
 

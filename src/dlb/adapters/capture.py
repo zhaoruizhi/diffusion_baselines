@@ -391,7 +391,7 @@ def _adapt_hf_masked_lm_backbone(model: object) -> object:
                 return self._canonical_logits(output.logits)
             if isinstance(output, tuple) and output:
                 return self._canonical_logits(output[0])
-            return output
+            return self._canonical_logits(output)
 
         def __getattr__(self, name: str) -> object:
             try:
