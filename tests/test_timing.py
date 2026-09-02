@@ -863,6 +863,68 @@ def test_teacher_capture_times_real_generate_only_after_loaded_model(monkeypatch
     assert json.loads(output.read_text())["schema"] == "dlb-generation-timing-v1"
 
 
+def test_duo_conditional_benchmark_uses_canonical_sampler_vocab(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _fake_cuda(monkeypatch)
+    state = {"loaded": False, "calls": 0}
+    owners = []
+
+    class Owner:
+        class Parameter:
+            dtype = "torch.bfloat16"
+
+        def __init__(self):
+            self.vocab_size = 50_258
+            self.backbone = SimpleNamespace(
+                config=SimpleNamespace(model_type="DUO", vocab_size=50_258)
+            )
+
+        def parameters(self):
+            return iter([self.Parameter()])
+
+        def restore_model_and_sample(self, num_steps, eps=1e-5):
+            raise AssertionError("benchmark must bypass the restore/decode wrapper")
+
+        def _eval_mode(self):
+            assert state["loaded"]
+
+        def _train_mode(self):
+            pass
+
+        def generate_samples(self, *, num_samples, num_steps, eps):
+            assert state["loaded"] and num_samples == 1 and num_steps == 1
+            assert self.vocab_size == 50_257
+            state["calls"] += 1
+            return FakeTensor([[state["calls"]]])
+
+    module = type("Module", (), {})()
+    module.algo = type("Algo", (), {"trainer_base": type("TB", (), {"TrainerBase": Owner})})
+    module.run = lambda: setattr(type("Marker", (), {}), "unused", True)
+    output = tmp_path / "duo.json"
+    invocation = CaptureInvocation(
+        entrypoint=ROOT / "upstreams/duo/main.py",
+        capture_path=tmp_path / "capture.json",
+        benchmark_output=output,
+        benchmark_metadata=_server_metadata(tmp_path),
+        benchmark_precision="author",
+        generation_mode="conditional_prefix",
+    )
+
+    def run_main(module, entrypoint, forwarded):
+        state["loaded"] = True
+        owner = module.algo.trainer_base.TrainerBase()
+        owners.append(owner)
+        owner.restore_model_and_sample(num_steps=1)
+
+    monkeypatch.setattr(capture_module, "_run_main", run_main)
+    capture_module._capture_teacher(module, invocation, [])
+
+    assert state["calls"] == 37
+    assert owners[0].vocab_size == 50_258
+    assert json.loads(output.read_text())["schema"] == "dlb-generation-timing-v1"
+
+
 def test_langflow_capture_times_loaded_generate_samples_before_decode(monkeypatch, tmp_path: Path) -> None:
     _fake_cuda(monkeypatch)
     state = {"loaded": False, "calls": 0, "decoded": 0}

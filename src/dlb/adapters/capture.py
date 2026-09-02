@@ -691,41 +691,53 @@ def _capture_teacher(
 
     def capture(self, *args, **kwargs):
         if invocation.benchmark_output is not None:
-            num_steps = kwargs.get("num_steps", args[0] if args else None)
-            eps = kwargs.get("eps", 1e-5)
-            if type(num_steps) is not int or num_steps <= 0:
-                raise ValueError("benchmark sampler requires a positive num_steps")
-            if invocation.entrypoint.parent.name == "mdlm":
-                if self.ema:
-                    parameters = tuple(
-                        list(self.backbone.parameters()) + list(self.noise.parameters())
+            benchmark_stack = ExitStack()
+            if (
+                invocation.generation_mode == "conditional_prefix"
+                and invocation.entrypoint.parent.name == "duo"
+            ):
+                sampler_vocab_size = _duo_canonical_sampler_vocab_size(self)
+                if sampler_vocab_size is not None:
+                    benchmark_stack.enter_context(
+                        patched_attribute(self, "vocab_size", sampler_vocab_size)
                     )
-                    self.ema.store(parameters)
-                    self.ema.copy_to(parameters)
-                self.backbone.eval()
-                self.noise.eval()
-                generate_one = lambda: self._sample(num_steps=num_steps, eps=eps)
-            else:
-                self._eval_mode()
-                generate_one = lambda: self.generate_samples(
-                    num_samples=1, num_steps=num_steps, eps=eps
-                )
-            try:
-                return benchmark_and_publish(
-                    generate_one,
-                    model=self,
-                    output=invocation.benchmark_output,
-                    metadata_path=invocation.benchmark_metadata,
-                    precision=invocation.benchmark_precision,
-                )
-            finally:
+
+            with benchmark_stack:
+                num_steps = kwargs.get("num_steps", args[0] if args else None)
+                eps = kwargs.get("eps", 1e-5)
+                if type(num_steps) is not int or num_steps <= 0:
+                    raise ValueError("benchmark sampler requires a positive num_steps")
                 if invocation.entrypoint.parent.name == "mdlm":
                     if self.ema:
-                        self.ema.restore(parameters)
-                    self.backbone.train()
-                    self.noise.train()
+                        parameters = tuple(
+                            list(self.backbone.parameters()) + list(self.noise.parameters())
+                        )
+                        self.ema.store(parameters)
+                        self.ema.copy_to(parameters)
+                    self.backbone.eval()
+                    self.noise.eval()
+                    generate_one = lambda: self._sample(num_steps=num_steps, eps=eps)
                 else:
-                    self._train_mode()
+                    self._eval_mode()
+                    generate_one = lambda: self.generate_samples(
+                        num_samples=1, num_steps=num_steps, eps=eps
+                    )
+                try:
+                    return benchmark_and_publish(
+                        generate_one,
+                        model=self,
+                        output=invocation.benchmark_output,
+                        metadata_path=invocation.benchmark_metadata,
+                        precision=invocation.benchmark_precision,
+                    )
+                finally:
+                    if invocation.entrypoint.parent.name == "mdlm":
+                        if self.ema:
+                            self.ema.restore(parameters)
+                        self.backbone.train()
+                        self.noise.train()
+                    else:
+                        self._train_mode()
         batch = current_conditioning_batch(self)
         with install_conditioning(self, batch):
             result = original(self, *args, **kwargs)
