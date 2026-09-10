@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "verified_at": "2026-09-10",
+  "source": {
+    "url": "https://github.com/lillian039/ELF.git",
+    "branch": "pytorch_elf",
+    "commit": "b29d8833609e9ab7f67cd9da39435ac5cea04837"
+  },
+  "assets": {
+    "owt": {"repo_id": "embedded-language-flows/ELF-B-owt-torch", "revision": "146f84133c1389bfd4ef47f14ec7a955da22faa7", "repo_type": "model", "patterns": ["checkpoint_95085", "config.yml"], "checkpoint": "checkpoint_95085"},
+    "wmt14": {"repo_id": "embedded-language-flows/ELF-B-de-en-torch", "revision": "93ce98315a2dec985cdefb8d8e62ab618e896ec4", "repo_type": "model", "patterns": ["checkpoint_880600", "config.yml"], "checkpoint": "checkpoint_880600"},
+    "xsum": {"repo_id": "embedded-language-flows/ELF-B-xsum-torch", "revision": "aca4abd1c7ff5f841f0e2a3ec8a18b0a927927f1", "repo_type": "model", "patterns": ["checkpoint_39800", "config.yml"], "checkpoint": "checkpoint_39800"},
+    "t5": {"repo_id": "google-t5/t5-small", "revision": "df1b051c49625cf57a3d0d8d3863ed4d13564fe4", "repo_type": "model", "patterns": ["config.json", "model.safetensors", "spiece.model", "tokenizer.json", "tokenizer_config.json"]},
+    "gpt2": {"repo_id": "gpt2", "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e", "repo_type": "model", "patterns": ["config.json", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt"]},
+    "gpt2-large": {"repo_id": "gpt2-large", "revision": "32b71b12589c2f8d625668d2335a01cac3249519", "repo_type": "model", "patterns": ["config.json", "model.safetensors", "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt"]},
+    "wmt14-official-validation": {"repo_id": "embedded-language-flows/wmt14_de-en_validation_t5", "revision": "bcc92bda4b07c329354843724c9d9ea740f30685", "repo_type": "dataset", "patterns": ["*.arrow", "*.json"]},
+    "xsum-official-validation": {"repo_id": "embedded-language-flows/xsum_validation_t5", "revision": "b0b4f5de92434d308eceeb9e38fd3f8d7d2b6a9e", "repo_type": "dataset", "patterns": ["*.arrow", "*.json"]},
+    "wmt14-raw": {"repo_id": "wmt/wmt14", "revision": "b199e406369ec1b7634206d3ded5ba45de2fe696", "repo_type": "dataset", "patterns": ["de-en/validation-*.parquet", "de-en/test-*.parquet"]},
+    "xsum-raw": {"repo_id": "EdinburghNLP/xsum", "revision": "7d4d486c2f8ef850b1a11aead99b894ff3dd7da9", "repo_type": "dataset", "patterns": ["data/validation-*.parquet", "data/test-*.parquet"]}
+  }
+}

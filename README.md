@@ -93,5 +93,6 @@ bash scripts/run_one.sh --model flm --dataset lm1b --steps 1 \
 - [故障排查](docs/08_troubleshooting.md)
 - [4-GPU 本地并行运行](docs/09_four_gpu_local.md)
 - [实验矩阵](docs/EXPERIMENT_MATRIX.md)
+- [ELF：OWT、前缀续写、WMT14/XSum 与服务器 timing 方案](docs/10_elf_server_runbook.md)（独立入口；先用公开权重建立基线）
 
 所有可复现输入均在 `artifacts/` 和 `configs/` 中锁定。不要把 `data/`、`checkpoints/`、`upstreams/`、`results/` 或 Conda archive 提交到 Git。

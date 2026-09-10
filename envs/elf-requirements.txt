@@ -1,0 +1,19 @@
+# Python 3.11; torch 2.5.1/cu124 installed separately (see ELF runbook).
+# Compatible with the official pytorch_elf transformers<4.45 requirement.
+numpy==1.26.4
+PyYAML==6.0.2
+transformers==4.44.2
+datasets==3.6.0
+huggingface-hub==0.36.0
+sentencepiece==0.2.0
+protobuf==5.29.5
+einops==0.8.1
+sacrebleu==2.5.1
+rouge-score==0.1.2
+tqdm==4.67.1
+pydantic==2.12.4
+safetensors==0.5.3
+nltk==3.9.1
+# Optional C64 distribution metric (run evaluate_elf.py --mauve explicitly).
+mauve-text==0.4.0
+faiss-cpu==1.8.0.post1
