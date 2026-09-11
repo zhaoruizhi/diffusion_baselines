@@ -1,5 +1,7 @@
 # ELF 加入 baseline：服务器实验方案与操作步骤
 
+**你当前已经完成第 3 步。接下来请按 [DS210029 单张 H200 逐步执行清单](11_elf_h200_next_steps.md) 操作。** 该清单依据你 2026-09-11 的 8 张 H200 NVL 快照，写明候选物理 GPU 3 的占用限制、UUID 绑定、smoke、核心质量实验、前缀续写、独立 timing、完整 test、日志与恢复命令。下文保留完整协议和此前故障说明，避免重复跑下载或混用结果目录。
+
 核查日期：2026-09-10。先用官方公开权重建立 ELF 的质量和耗时基线；你的方法尚未训练 WMT14/XSum，本轮不安排训练。所有下载、环境安装和模型运行都在 Linux GPU 服务器完成。本地新增的是锁文件、脚本、CPU 合约检查和本文档。
 
 **交付状态：** 下述独立 ELF 入口已经编写，已做本地 CPU 合约检查与语法检查；尚未在服务器加载权重或执行 CUDA，所以不能声称已经复现论文数值。先通过第 4 步 smoke，再运行正式实验。旧的 `run_one.sh --model elf`、`run_all.sh`、conditional registry 和严格聚合器**尚不支持 ELF**；请使用本文新增的入口。结果单独进入 `results/elf/`，不改动已有矩阵。
@@ -123,7 +125,7 @@ python scripts/prepare_elf.py data
 选择一个 GPU。生成和 timing 都会先执行一个独立、不计时的检查：验证每个模型输入数值有限、观察实际前向次数，条件任务还检查每次 forward 的前缀 latent 是否正确固定。该检查后重置 RNG，不改变正式样本的随机种子。
 
 ```bash
-export CUDA_VISIBLE_DEVICES=0
+# 先按单 H200 清单确认卡可用并设置 CUDA_VISIBLE_DEVICES；不要默认占用物理 GPU 0。
 ELF_STEPS="1 32" bash scripts/run_elf_suite.sh smoke owt
 ELF_STEPS="1 64" ELF_SPLIT=official-validation bash scripts/run_elf_suite.sh smoke wmt14
 ELF_STEPS="1 64" ELF_SPLIT=official-validation bash scripts/run_elf_suite.sh smoke xsum
