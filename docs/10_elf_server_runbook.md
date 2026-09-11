@@ -53,7 +53,7 @@ python -m pip install -r envs/elf-requirements.txt
 python -m pip check
 python -m unittest discover -s tests -p 'test_elf_standalone.py' -v
 
-python scripts/prepare_elf.py assets
+python scripts/prepare_elf.py assets --download-workers 1 --download-attempts 6 &&
 python scripts/prepare_elf.py data
 mkdir -p results/elf/environment
 python -m pip freeze > results/elf/environment/pip-freeze.txt
@@ -67,6 +67,34 @@ nvidia-smi -q > results/elf/environment/nvidia-smi.txt
 下载后生成 `data/elf/assets.json`，包含实际文件 SHA256。脚本在离线运行前校验使用到的文件；源码必须位于锁定提交且没有改动。不要编辑 `upstreams/elf`。所有新增配置都通过 wrapper 参数传入。
 
 `prepare_elf.py data` 生成六个带 manifest 的 JSONL：两份作者 validation，以及 WMT14/XSum 各自原始 validation/test。每行保留原始 source/reference 和稳定 id。作者 Arrow 的条件 token IDs 会额外保留，以便做发布配置校验；若原始文本列不存在，脚本明确报错，不用截断 token 解码结果冒充 reference。
+
+**第 3 步恢复：HF 429 / assets.json 不存在（2026-09-11）**
+
+已遇到的服务器日志是：源码 checkout、PyTorch/依赖安装、`pip check` 和 7 个原有 CPU 测试全部成功；第一次查询 ELF OWT 模型 revision 时，HF 返回 `429 Too Many Requests`，详细信息为 `maximum time in concurrency queue reached`。这是下载端的限流/并发排队失败，不能据此判断模型 revision 不存在，也不是 CUDA 安装错误。
+
+Hub 0.36 将这个 HTTP 错误包装成 `LocalEntryNotFoundError`。因为所有资源成功下载后才发布 `data/elf/assets.json`，随后单独执行 `data` 会再次报清单缺失。这是同一次下载失败的后果。旧测试里打印的 `primary timing requires --batch-size 1` 等 argparse error 是预期的拒绝测试，末尾 `OK` 表示测试通过；新版已捕获这些预期输出，减少误解。
+
+同步更新后的 `scripts/prepare_elf.py`、`scripts/elf_common.py` 和测试文件后，保留已建环境、源码和下载缓存，从下载阶段继续：
+
+```bash
+cd ~/diffusion_baseline
+conda activate dlb-elf
+export DLB_ROOT="$PWD"
+export ELF_PYTHON="$CONDA_PREFIX/bin/python"
+export PYTHONDONTWRITEBYTECODE=1
+
+# 可选但建议：尚未登录 HF 时，交互式输入自己的只读 token。
+# 已登录可跳过；不要把 token 写进脚本、日志或聊天。
+hf auth login
+
+python -m unittest discover -s tests -p 'test_elf_standalone.py' -v &&
+python scripts/prepare_elf.py assets --download-workers 1 --download-attempts 6 &&
+python scripts/prepare_elf.py data
+```
+
+新脚本默认单文件下载 worker；遇到 429/500/502/503/504，连同嵌套在 cache exception 内的错误，最多尝试 6 次。默认间隔为 60/120/240/300/300 秒；响应给出更长的 `Retry-After` 或 `RateLimit` 重置时间时尊重该时间。认证失败、revision 不存在、磁盘错误直接退出，不会无限重试。减少文件并发不能直接消除这次 revision API 的排队问题，退避重试才是对该错误的恢复措施。
+
+出现 `OK: all ... ELF assets verified; wrote data/elf/assets.json` 后才会进入 `data`。如果重试仍耗尽，稍后重跑同一条下载命令，或检查服务器共享出口/代理是否存在其他大量 HF 请求。不要并行启动多个相同下载脚本；不必删除缓存、手工创建 assets.json、重建 Conda 环境或重装 PyTorch。HF 登录可以避免未认证请求共享 IP 配额，但不保证解决服务端拥塞。[HF 官方限流说明](https://huggingface.co/docs/hub/rate-limits)
 
 **4. 先做服务器 smoke 和公开 checkpoint 校验**
 

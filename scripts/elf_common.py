@@ -60,6 +60,12 @@ def default_sampling(task, steps):
 
 def manifest(root):
     path = Path(root) / "data/elf/assets.json"
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"ELF asset manifest is missing: {path}. "
+            "First complete `python scripts/prepare_elf.py assets` successfully; "
+            "a failed download does not publish assets.json. Do not create it manually."
+        )
     data = json.loads(path.read_text())
     if data["lock_sha256"] != sha256(Path(root) / "artifacts/elf_lock.json"):
         raise ValueError("ELF lock changed since asset preparation")
