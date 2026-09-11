@@ -82,6 +82,67 @@ def export_rows(path, rows, provenance):
     temporary.replace(path)
     write_json(path.with_suffix(".manifest.json"), {
         "schema": "elf-input-v1", "count": count, "sha256": sha256(path), **provenance})
+    print(f"OK: exported {count} rows to {path}", flush=True)
+
+
+def official_arrow_rows(directory):
+    """Read saved-dataset IPC rows without deserializing HF Features metadata.
+
+    The author release uses `_type: List`, absent in datasets 3.6. Its underlying
+    Arrow columns are ordinary lists/strings and need no HF feature conversion.
+    Keep the state.json shard order and leave the hashed snapshot untouched.
+    """
+    import pyarrow as pa
+
+    directory = Path(directory)
+    state = json.loads((directory / "state.json").read_text())
+    shards = state.get("_data_files")
+    if not isinstance(shards, list) or not shards:
+        raise ValueError(f"Missing Arrow shard list: {directory}/state.json")
+    seen = set()
+    index = 0
+    for entry in shards:
+        filename = entry.get("filename") if isinstance(entry, dict) else None
+        if not isinstance(filename, str) or not filename:
+            raise ValueError("Invalid Arrow shard filename in state.json")
+        relative = Path(filename)
+        if relative.is_absolute() or ".." in relative.parts or filename in seen:
+            raise ValueError(f"Unsafe or duplicated Arrow shard: {filename}")
+        seen.add(filename)
+        with pa.memory_map(str(directory / relative), "r") as source:
+            reader = pa.ipc.open_stream(source)
+            required = {"input", "target", "condition_input_ids"}
+            missing = required - set(reader.schema.names)
+            if missing:
+                raise ValueError(f"{filename}: missing raw source/reference columns: {sorted(missing)}")
+            for batch in reader:
+                for row in batch.select(sorted(required)).to_pylist():
+                    tokens = row["condition_input_ids"]
+                    if not isinstance(row["input"], str) or not isinstance(row["target"], str):
+                        raise ValueError(f"{filename}: non-text source/reference at row {index}")
+                    if not isinstance(tokens, list) or any(type(t) is not int or t < 0 for t in tokens):
+                        raise ValueError(f"{filename}: invalid condition token IDs at row {index}")
+                    yield {"id": index, "input": row["input"], "output": row["target"],
+                           "condition_input_ids": tokens}
+                    index += 1
+
+
+def raw_parquet_rows(files, task):
+    """Read pinned raw splits locally, without a Hub/datasets builder call."""
+    import pyarrow.parquet as pq
+
+    index = 0
+    for filename in files:
+        with pq.ParquetFile(filename) as source:
+            columns = ["translation"] if task == "wmt14" else ["document", "summary"]
+            for batch in source.iter_batches(columns=columns):
+                for row in batch.to_pylist():
+                    src, target = ((row["translation"]["de"], row["translation"]["en"])
+                                   if task == "wmt14" else (row["document"], row["summary"]))
+                    if not isinstance(src, str) or not isinstance(target, str):
+                        raise ValueError(f"{filename}: non-text source/reference at row {index}")
+                    yield {"id": index, "input": src, "output": target}
+                    index += 1
 
 
 def main():
@@ -126,39 +187,28 @@ def main():
                    "source_commit": SOURCE_COMMIT, "lock_sha256": sha256(root / "artifacts/elf_lock.json")})
         print(f"OK: all {len(records)} ELF assets verified; wrote data/elf/assets.json", flush=True)
         return
-    from datasets import load_dataset, load_from_disk
-    from transformers import AutoTokenizer
     if args.stage == "data":
         for task in ("wmt14", "xsum"):
             official_name = f"{task}-official-validation"
-            official = load_from_disk(str(asset(root, official_name)))
-            # Author Arrow release includes raw input/target. Fail instead of
-            # inventing references by decoding truncated model tokens.
-            if not {"input", "target"}.issubset(official.column_names):
-                raise ValueError(f"{official_name}: missing raw input/target columns")
+            directory = asset(root, official_name)
             export_rows(root / f"data/elf/{official_name}.jsonl",
-                        ({"id": i, "input": r["input"], "output": r["target"],
-                          "condition_input_ids": list(r["condition_input_ids"])}
-                         for i, r in enumerate(official)),
-                        {"task": task, "split": "official-validation", "asset": lock["assets"][official_name]})
+                        official_arrow_rows(directory),
+                        {"task": task, "split": "official-validation", "asset": lock["assets"][official_name],
+                         "reader": "pyarrow_ipc_v1"})
             directory = asset(root, f"{task}-raw")
             for split in ("validation", "test"):
                 files = sorted(str(p) for p in directory.rglob(f"{split}-*.parquet"))
                 if not files:
                     raise FileNotFoundError(f"Missing {task} {split} parquet")
-                ds = load_dataset("parquet", data_files={split: files}, split=split)
-                def rows():
-                    for i, r in enumerate(ds):
-                        src, target = ((r["translation"]["de"], r["translation"]["en"])
-                                       if task == "wmt14" else (r["document"], r["summary"]))
-                        yield {"id": i, "input": src, "output": target}
-                export_rows(root / f"data/elf/{task}-{split}.jsonl", rows(),
-                            {"task": task, "split": split, "asset": lock["assets"][f"{task}-raw"]})
+                export_rows(root / f"data/elf/{task}-{split}.jsonl", raw_parquet_rows(files, task),
+                            {"task": task, "split": split, "asset": lock["assets"][f"{task}-raw"],
+                             "reader": "pyarrow_parquet_v1"})
         return
     # Same held-out rows and literal prefix/reference text as the C64 benchmark;
     # T5 re-encoding is a separate protocol, never reinterpret GPT-2 IDs as T5.
     sys.path.insert(0, str(root / "src"))
     from dlb.conditional_prompts import load_protocol, verify_prompts
+    from transformers import AutoTokenizer
     verify_prompts(root, "owt", load_protocol(root / "configs/conditional.yaml"))
     prompts = root / "data/conditional/owt-c64/prompts.jsonl"
     tokenizer = AutoTokenizer.from_pretrained(str(asset(root, "gpt2")), local_files_only=True)

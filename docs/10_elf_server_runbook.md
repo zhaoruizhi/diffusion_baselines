@@ -96,6 +96,28 @@ python scripts/prepare_elf.py data
 
 出现 `OK: all ... ELF assets verified; wrote data/elf/assets.json` 后才会进入 `data`。如果重试仍耗尽，稍后重跑同一条下载命令，或检查服务器共享出口/代理是否存在其他大量 HF 请求。不要并行启动多个相同下载脚本；不必删除缓存、手工创建 assets.json、重建 Conda 环境或重装 PyTorch。HF 登录可以避免未认证请求共享 IP 配额，但不保证解决服务端拥塞。[HF 官方限流说明](https://huggingface.co/docs/hub/rate-limits)
 
+**第 3 步恢复：`Feature type 'List' not found`（2026-09-11）**
+
+若日志已出现 `OK: all 10 ELF assets verified; wrote data/elf/assets.json`，说明下载阶段已成功。之后 `datasets.load_from_disk` 报 `Feature type 'List' not found`，是作者 Arrow 数据的 HF Features 元数据包含 `_type: List`，而固定的 `datasets==3.6.0` 尚不支持该类型。此时无需再次下载资源。
+
+导出脚本现改为使用 PyArrow IPC 读取官方 Arrow 分片，按 `state.json` 中的分片顺序保留 source、完整 reference 和条件 token IDs；原始 validation/test Parquet 也直接用 PyArrow 读取。只跳过 HF Features 的版本相关反序列化，不改动任何 snapshot 文件、token 内容或下载清单，原有 SHA256 校验仍执行。[Arrow IPC 官方文档](https://arrow.apache.org/docs/python/ipc.html)
+
+在服务器拉取修复后，只重跑数据导出：
+
+```bash
+cd ~/diffusion_baseline
+git pull --ff-only origin main
+conda activate dlb-elf
+export DLB_ROOT="$PWD"
+export ELF_PYTHON="$CONDA_PREFIX/bin/python"
+export PYTHONDONTWRITEBYTECODE=1
+
+python -m unittest discover -s tests -p 'test_elf_standalone.py' -v &&
+python scripts/prepare_elf.py data
+```
+
+预期看到 6 条 `OK: exported ... rows to ...jsonl`，分别对应两个任务各自的 official-validation、validation、test。Arrow 已作为现有 datasets 的依赖安装，无需升级 datasets、transformers 或重装环境；也不要手工将 snapshot 的 `List` 改成 `Sequence`，否则会破坏下载校验。导出全部成功后再进入第 4 步。
+
 **4. 先做服务器 smoke 和公开 checkpoint 校验**
 
 选择一个 GPU。生成和 timing 都会先执行一个独立、不计时的检查：验证每个模型输入数值有限、观察实际前向次数，条件任务还检查每次 forward 的前缀 latent 是否正确固定。该检查后重置 RNG，不改变正式样本的随机种子。

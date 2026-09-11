@@ -15,7 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from elf_common import SOURCE_COMMIT, default_sampling, manifest, sha256, write_json
 from evaluate_elf import validate_records
 from run_elf import parse_args
-from prepare_elf import download_snapshot, retry_delay
+from prepare_elf import download_snapshot, retry_delay, official_arrow_rows, raw_parquet_rows, export_rows
+
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+except ImportError:
+    pa = None
 
 
 class ELFContracts(unittest.TestCase):
@@ -138,6 +144,65 @@ class ELFDownloadRecovery(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaisesRegex(FileNotFoundError, "prepare_elf.py assets"):
                 manifest(root)
+
+
+@unittest.skipIf(pa is None, "Arrow export checks require pyarrow (installed in dlb-elf)")
+class ELFArrowCompatibility(unittest.TestCase):
+    def write_shard(self, root, name, rows):
+        table = pa.Table.from_pylist(rows)
+        # The same HF feature annotation that datasets 3.6 cannot deserialize.
+        features = {"condition_input_ids": {"_type": "List", "feature": {"_type": "Value", "dtype": "int64"}}}
+        info = {"features": features}
+        table = table.replace_schema_metadata({b"huggingface": json.dumps({"info": info}).encode()})
+        with pa.OSFile(str(root / name), "wb") as sink:
+            with pa.ipc.new_stream(sink, table.schema) as writer:
+                writer.write_table(table)
+        write_json(root / "dataset_info.json", info)
+
+    def test_list_metadata_exports_exact_rows_in_state_order_without_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_shard(root, "a.arrow", [{"input": "Zwei", "target": "Two", "condition_input_ids": [3]}])
+            self.write_shard(root, "z.arrow", [{"input": "Eins", "target": "One", "condition_input_ids": [7, 8]}])
+            write_json(root / "state.json", {"_data_files": [{"filename": "z.arrow"}, {"filename": "a.arrow"}]})
+            hashes = {p: sha256(p) for p in root.iterdir()}
+            rows = list(official_arrow_rows(root))
+            self.assertEqual(rows, [{"id": 0, "input": "Eins", "output": "One", "condition_input_ids": [7, 8]},
+                                    {"id": 1, "input": "Zwei", "output": "Two", "condition_input_ids": [3]}])
+            self.assertEqual(hashes, {p: sha256(p) for p in root.iterdir()})
+            output = root / "export.jsonl"
+            with redirect_stdout(io.StringIO()):
+                export_rows(output, rows, {"task": "wmt14"})
+            sidecar = json.loads(output.with_suffix(".manifest.json").read_text())
+            self.assertEqual(sidecar["count"], 2)
+            self.assertEqual(sidecar["sha256"], sha256(output))
+
+    def test_missing_reference_fails_instead_of_reconstructing_from_tokens(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_shard(root, "data.arrow", [{"input": "Source", "condition_input_ids": [1]}])
+            write_json(root / "state.json", {"_data_files": [{"filename": "data.arrow"}]})
+            with self.assertRaisesRegex(ValueError, "missing raw source/reference"):
+                list(official_arrow_rows(root))
+
+    def test_duplicate_shards_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_shard(root, "data.arrow", [{"input": "Source", "target": "Target", "condition_input_ids": [1]}])
+            write_json(root / "state.json", {"_data_files": [{"filename": "data.arrow"}] * 2})
+            with self.assertRaisesRegex(ValueError, "duplicated Arrow shard"):
+                list(official_arrow_rows(root))
+
+    def test_parquet_preserves_translation_direction_and_full_summary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for task, raw, expected in [
+                ("wmt14", {"translation": {"de": "Hallo", "en": "Hello"}}, {"id": 0, "input": "Hallo", "output": "Hello"}),
+                ("xsum", {"document": "Full article", "summary": "Full reference"},
+                 {"id": 0, "input": "Full article", "output": "Full reference"}),
+            ]:
+                path = Path(directory) / f"{task}.parquet"
+                pq.write_table(pa.Table.from_pylist([raw]), path)
+                self.assertEqual(list(raw_parquet_rows([path], task)), [expected])
 
 
 if __name__ == "__main__":
