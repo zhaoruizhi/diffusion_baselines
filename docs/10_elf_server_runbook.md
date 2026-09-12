@@ -1,5 +1,7 @@
 # ELF 加入 baseline：服务器实验方案与操作步骤
 
+**同步故障补充：若看到 `Cannot fast-forward to multiple branches`，代码尚未更新，不能继续运行实验。请先按 [文档 13 第 1 步](13_elf_eos_fix.md) 显式 fetch/merge 并验证 EOS 提交。该节也解释 GPU 2 上小进程对质量运行和正式 timing 的不同影响。**
+
 **最新修复：服务器诊断确认原始 WMT14/XSum 条件缺少作者预处理中的 EOS，造成 XSum 空条件中断，并解释了 WMT14 降分的输入差异。请优先执行 [EOS 修复后的恢复步骤](13_elf_eos_fix.md)：更新代码、CPU 对照检查、重跑条件 64 步全集，再测其余质量和 timing。** OWT 与已有 official-validation 结果保留；旧原始条件生成结果不能只重算指标。使用新结果目录，无需重新下载或导出数据。
 
 **你已在物理 GPU 2 完成三项 smoke 和 1000 样本 sanity，日志中的主指标合理，无需重跑。接下来请按 [DS210029 单张 H200 逐步执行清单](11_elf_h200_next_steps.md) 的 B 恢复环境，再从 E 开始。** D1 已记录此次指标判读与长度警告解释；E/G 分别提供核心质量与独立 timing 命令，F 是另外准备的 OWT 前缀续写。下文保留完整协议和此前故障说明，避免重复跑下载或混用结果目录。

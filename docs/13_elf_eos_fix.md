@@ -19,9 +19,29 @@ WMT14 旧输入缺 EOS 的协议错误已确认，是质量下降的重要解释
 
 **1．同步代码并绑定物理 GPU 2**
 
+最新服务器日志中的 `fatal: Cannot fast-forward to multiple branches.` 表明 pull 的整合阶段失败；随后继续使用旧 audit，虽然输出文件名叫 `input-audit-v2.json`，内部 schema 仍是 v1，触发了断言。由于实验块有 `set -e`，本次尚未启动 64 步生成。这不是 EOS 修复再次失效。仅凭日志不能确定为什么出现多个合并目标；先显式抓取和合并唯一的远端 main，不使用可能包含多个候选的 FETCH_HEAD，也不重置本地工作。
+
+先单独执行同步块，看到 `ELF EOS code sync OK` 后再执行下面环境设置。Git pull 本身包含抓取和整合两个阶段，因此“显示抓取到 main”不代表工作区更新成功。[Git 文档](https://git-scm.com/docs/git-pull)
+
+```bash
+(
+  set -e
+  cd ~/diffusion_baseline
+  git status --short
+  test "$(git branch --show-current)" = main
+  git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+  git merge --ff-only refs/remotes/origin/main
+  git merge-base --is-ancestor 1b253e6 HEAD
+  git diff --exit-code HEAD -- scripts/elf_common.py scripts/audit_elf_inputs.py scripts/run_elf.py
+  git log -1 --oneline
+  printf '%s\n' 'ELF EOS code sync OK'
+)
+```
+
+若此块仍失败，停止并保留报错；不要继续 audit/generate。无须重新克隆、下载资源或删除结果。服务器有本地修改或分支分叉时，以上命令不会强行覆盖它们。
+
 ```bash
 cd ~/diffusion_baseline
-git pull --ff-only origin main
 conda activate dlb-elf
 export DLB_ROOT="$PWD"
 export ELF_PYTHON="$CONDA_PREFIX/bin/python"
@@ -42,11 +62,25 @@ runlog() {
 nvidia-smi -i "$ELF_GPU_UUID" > "$ELF_RESULTS/environment/gpu-before.txt"
 ```
 
+**GPU 2 上的小进程是否影响实验**
+
+2026-09-12 14:56 的快照显示总显存约 97 MiB / 143771 MiB、GPU 利用率 0%，有三个同伴的 Python CUDA 进程。当前显存压力很低，可以先运行质量生成与评测；共享运行主要可能拖慢完成时间，如果其他进程后来增加显存也可能导致 OOM。共享本身通常不会改变 BLEU/ROUGE/PPL 的计算口径，不用因此作废成功完成的质量结果。
+
+显存大小不是算力占用指标；0% 也只对应采样窗口。正式 timing 需要与同伴约定 GPU 独占时段，其他任务可能间歇启动 kernel，影响延迟和抖动，目前无法从快照量化影响百分比。[NVIDIA-SMI 指标说明](https://docs.nvidia.com/deploy/nvidia-smi/index.html)
+
+可在另一个终端观察 30 次每秒的进程利用率；`-` 代表指标不可用，不代表零占用。观察只能了解负载，不能保证随后的整个 timing 窗口独占：
+
+```bash
+nvidia-smi pmon -i 2 -s um -d 1 -c 30
+```
+
 **2．CPU 检查实际修复路径，再跑 64 步 validation 全集**
 
 更新后的诊断会保留旧 `raw` 统计用于对照，所以其中仍显示 5 个空列表是预期的。真正判定修复的是新增的 `corrected_runner_comparison_including_duplicates`：`empty_condition_ids=[]`、`ready_for_raw_validation=true`。完整 token 比较和截断后比较会分别报告，并检查顺序是否一致。它调用 runner 共用的分词函数，不是仅对 EOS 做一个假设性比较。
 
 以下整块先做 CPU 检查，通过后才加载 GPU 模型。两项分别生成全部 3000/11332 条；参考答案不参与条件编码。
+
+本次旧 audit 在 schema 断言处就停止了，因此同步成功后可以直接重跑下块、沿用 `elf-h200-gpu2-eos-v2` 目录。诊断 JSON 会更新成 v2；无需清空整个结果目录。如果后来另外启动过生成，则仍需先检查相应格子是否已完成，避免重复运行。
 
 ```bash
 (
