@@ -2,6 +2,8 @@
 
 这份步骤从你 **2026-09-11 已完成数据导出** 的状态开始。按 A → B → C → D → E → F → G → H 顺序执行。所有命令都在服务器 `~/diffusion_baseline`；不再执行 Conda 创建、pip 安装、源码下载或 `prepare_elf.py assets/data`。模型推理均使用同一张 H200、单进程、generation batch=8；正式 timing 固定 batch=1。
 
+**2026-09-12 sanity 日志更新：C/D 已成功完成，不再执行。** 先阅读 D1 的指标判读；如果换了 shell，按 B 恢复环境，然后执行 E。F 尚未准备时可以先执行 G 的前三个任务；前缀 timing 已单列为可选后续命令。
+
 **A. 你已经完成什么，还需要跑什么**
 
 已完成：`dlb-elf` 环境、锁定 ELF 源码、10 项模型/数据资源下载及校验、以下 6 个 JSONL 导出。
@@ -15,7 +17,7 @@
 | xsum-validation | 11332 | 扫步数、选择配置 |
 | xsum-test | 11334 | 冻结配置后的正式测试 |
 
-尚未由这些日志证明完成：GPU smoke、生成质量评测、timing、OWT 前缀续写 prompts。OWT unconditional 无需下载训练集；OWT 前缀续写需要服务器上原 benchmark 的 held-out prompts，放在 F 单独准备。
+最新日志还确认完成：物理 GPU 2 的 CUDA bf16 检查、OWT/WMT14/XSum smoke、三项 1000 样本 sanity 生成和质量评测。尚未收到正式全集质量、timing、OWT 前缀续写 prompts 的结果。OWT unconditional 无需下载训练集；OWT 前缀续写需要服务器上原 benchmark 的 held-out prompts，放在 F 单独准备。
 
 本轮实验清单如下。先完成“核心”，再补扩展；不要上来直接运行最贵的 1024 步。
 
@@ -151,19 +153,44 @@ smoke 是功能检查，不凭两个样本判断论文质量；1 步生成很差
 
 括号结束后，`ELF_RESULTS` 自动回到 B 设置的 `results/elf-h200-gpu2`，不需要手动 unset。
 
+**D1. 本次 sanity 日志判读：主指标合理，继续正式实验**
+
+三组均完成 `1000/1000 samples` 并打印评测 JSON，没有 traceback。终端先后打印 OWT、WMT14、XSum；条件任务的通用评测器都会打印 BLEU 和 ROUGE，应按任务读取主指标：
+
+| 任务 | 本次主指标 | 前文记录的论文参考 | 判读 |
+|---|---|---|---|
+| OWT，32 步 | PPL **24.4239**；entropy **5.1671 nats** | 24.1；5.15 | PPL 高约 1.34%，entropy 高约 0.017，量级接近 |
+| WMT14，64 步 | BLEU **25.7906** | 26.4 | 低约 0.61 BLEU；当前是前 1000 条 official-validation，不是论文 test |
+| XSum，64 步 | ROUGE-1/2/L **36.3126 / 12.3464 / 28.1115** | 36.0 / 12.2 / 27.8 | 量级接近；不能据此声称 test 超过论文 |
+
+XSum 的 BLEU=8.0842 是附带指标，不是截图中 XSum 的评价列；WMT14 的 ROUGE=59.24/33.29/53.85 也不应拿去对比 XSum。OWT 的 entropy 是每条文本的经验 unigram 熵，PPL 是 GPT-2 Large 的预测困惑度，两者不是同一个概率分布，所以不要求 `entropy = ln(PPL)`。ROUGE 的 `_sem` 是此次 1000 条样本之间的标准误，不是多个随机种子的标准差，不能与论文误差条直接判定显著性。
+
+两条 tokenizer 警告均未导致本次失败：
+
+- `clean_up_tokenization_spaces` 是所装 Transformers 版本的未来默认值提示，本次不用升级或重装环境。
+- `1037 > 1024` 来自评测脚本先对完整文本分词以统计原始长度；`above_1024_tokens_fraction=0.002` 表示 1000 条里有 2 条超过 GPT-2 的 1024 上限。实际 PPL 调用 `compute_gen_ppl` 时明确设置 `truncation=True, max_length=1024`，entropy 同样取前 1024 个 GPT-2 tokens。样本没有被丢弃，超长部分不计分，结果中已记录右截断策略。
+
+长度还可做交叉检查：原始平均长度 946.265 对应总计 946265 tokens；减去每条不计首 token 的 1000 个目标以及截断掉的 21 tokens，得到日志中的 `valid_token_count=945244`。所有三项 `empty_fraction=0`，OWT 最短也有 828 个 GPT-2 tokens，未见空输出或极短输出退化的迹象。
+
+**结论：日志未显示需要修复的生成或计分错误，保留已有 sanity，不改采样参数、不重跑 C/D，进入 E 的正式步数扫描。** 当前没有正式 timing，不能从 `8/1000 samples` 的进度或生成总用时推断单样本延迟。此次日志判读仅说明 sanity 合理，正式 test 和速度结论仍待测量。
+
 **E. 核心正式质量实验：OWT → WMT14 → XSum**
 
-先 OWT，后条件任务；同一张 H200 连续串行运行，每项先生成再评测：
+先 OWT，后条件任务；同一张 H200 连续串行运行。显式固定 OWT 为 1024 条、条件任务为完整 validation，按每个步数先生成再评测，便于及时看到对应质量：
 
 ```bash
 (
   set -e
-  runlog owt_core_generate env ELF_STEPS="8 16 32 64" bash scripts/run_elf_suite.sh generate owt
-  runlog owt_core_evaluate env ELF_STEPS="8 16 32 64" bash scripts/run_elf_suite.sh evaluate owt
-  runlog wmt_core_generate env ELF_STEPS="8 16 32 64" ELF_SPLIT=validation bash scripts/run_elf_suite.sh generate wmt14
-  runlog wmt_core_evaluate env ELF_STEPS="8 16 32 64" ELF_SPLIT=validation bash scripts/run_elf_suite.sh evaluate wmt14
-  runlog xsum_core_generate env ELF_STEPS="8 16 32 64" ELF_SPLIT=validation bash scripts/run_elf_suite.sh generate xsum
-  runlog xsum_core_evaluate env ELF_STEPS="8 16 32 64" ELF_SPLIT=validation bash scripts/run_elf_suite.sh evaluate xsum
+  for steps in 8 16 32 64; do
+    runlog "owt_s${steps}_generate" env ELF_COUNT=1024 ELF_STEPS="$steps" bash scripts/run_elf_suite.sh generate owt
+    runlog "owt_s${steps}_evaluate" env ELF_STEPS="$steps" bash scripts/run_elf_suite.sh evaluate owt
+  done
+  for task in wmt14 xsum; do
+    for steps in 8 16 32 64; do
+      runlog "${task}_s${steps}_generate" env ELF_COUNT=0 ELF_STEPS="$steps" ELF_SPLIT=validation bash scripts/run_elf_suite.sh generate "$task"
+      runlog "${task}_s${steps}_evaluate" env ELF_STEPS="$steps" ELF_SPLIT=validation bash scripts/run_elf_suite.sh evaluate "$task"
+    done
+  done
 )
 ```
 
@@ -227,9 +254,18 @@ nvidia-smi -i "$ELF_GPU_UUID"
   runlog owt_core_timing env ELF_STEPS="8 16 32 64" bash scripts/run_elf_suite.sh timing owt
   runlog wmt_core_timing env ELF_STEPS="8 16 32 64" ELF_SPLIT=validation bash scripts/run_elf_suite.sh timing wmt14
   runlog xsum_core_timing env ELF_STEPS="8 16 32 64" ELF_SPLIT=validation bash scripts/run_elf_suite.sh timing xsum
-  # 只有完成 F 的 prefix 准备后才运行下一行。
-  runlog prefix_core_timing env ELF_STEPS="8 16 32 64" bash scripts/run_elf_suite.sh timing owt-prefix
   nvidia-smi -i "$ELF_GPU_UUID" > "$ELF_RESULTS/environment/gpu-after-timing.txt"
+)
+```
+
+只有完成 F 的 prefix 准备后，再单独测前缀任务；同样保持 GPU 独占：
+
+```bash
+(
+  set -e
+  nvidia-smi -i "$ELF_GPU_UUID" > "$ELF_RESULTS/environment/gpu-before-prefix-timing.txt"
+  runlog prefix_core_timing env ELF_STEPS="8 16 32 64" bash scripts/run_elf_suite.sh timing owt-prefix
+  nvidia-smi -i "$ELF_GPU_UUID" > "$ELF_RESULTS/environment/gpu-after-prefix-timing.txt"
 )
 ```
 
@@ -318,4 +354,4 @@ python scripts/summarize_elf.py \
 
 失败目录不会被覆盖。若某次失败且目录已存在，先保留日志，用新的 `ELF_RESULTS` 目录（例如 `results/elf-h200-gpu2-retry1`）只重跑失败点；评测时要指向相同新目录。已经成功生成但尚未评测的点，只执行 evaluate；已经有质量结果而缺 timing，只执行 timing。不要在同一根目录里改变 seed/batch/compile 或样本数后覆写同一格。
 
-如果 shell 断开后要恢复，先重新设置 B 中的变量和 `runlog` 函数，查询当前 GPU 占用，再从未完成的阶段继续。此次只补充操作步骤，没有在服务器代跑；GPU 数值与实际耗时仍由 C 开始验证。
+如果 shell 断开后要恢复，先重新设置 B 中的变量和 `runlog` 函数，查询当前 GPU 占用，再从未完成的阶段继续。本次更新基于你提供的服务器终端日志，没有在服务器代跑；已确认 C/D 的运行结果，后续全集质量和实际 timing 仍待执行。
