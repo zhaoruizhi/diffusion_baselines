@@ -11,7 +11,7 @@ from elf_common import (ROOT, asset, condition_token_ids, offline, read_jsonl,
                         require_server, sha256, write_json)
 
 
-def audit_rows(raw, official, tokenizer, limit):
+def audit_rows(raw, official, tokenizer, limit, task):
     def inspect(rows):
         token_rows = [condition_token_ids(row, tokenizer) for row in rows]
         return token_rows, {
@@ -48,10 +48,32 @@ def audit_rows(raw, official, tokenizer, limit):
                 "official_first_ids": expected[:16], "official_last_ids": expected[-16:],
                 "official_condition_decoded_excerpt": tokenizer.decode(expected[:limit], skip_special_tokens=False)[:240],
             })
+    corrected = [condition_token_ids(row, tokenizer, task=task) for row in raw]
+    # Multisets account for every duplicate's multiplicity instead of skipping
+    # the eight WMT rows that the unique-pair diagnostic cannot disambiguate.
+    def records(rows, token_rows, capped):
+        return [(r["input"], r["output"], tuple(ids[:limit] if capped else ids))
+                for r, ids in zip(rows, token_rows)]
+    corrected_records = records(raw, corrected, False)
+    author_records = records(official, official_ids, False)
+    corrected_capped = records(raw, corrected, True)
+    author_capped = records(official, official_ids, True)
+    coverage = {
+        "raw_rows": len(raw), "official_rows": len(official),
+        "full_token_multisets_equal": Counter(corrected_records) == Counter(author_records),
+        "capped_token_multisets_equal": Counter(corrected_capped) == Counter(author_capped),
+        "same_order_and_full_tokens": corrected_records == author_records,
+        "same_order_and_capped_tokens": corrected_capped == author_capped,
+        "empty_condition_ids": [r["id"] for r, ids in zip(raw, corrected) if not ids],
+        "policy": "released_ids_or_raw_plus_eos_then_source_cap_v2",
+    }
+    coverage["ready_for_raw_validation"] = (
+        bool(raw) and coverage["capped_token_multisets_equal"] and not coverage["empty_condition_ids"])
     return {"source_cap": limit, "raw": raw_stats, "official": official_stats,
             "comparison_by_exact_source_and_reference_text_not_row_number": dict(matches),
             "mismatch_examples": examples,
-            "official_conditions_nonempty": bool(official) and not official_stats["empty_condition_ids"]}
+            "official_conditions_nonempty": bool(official) and not official_stats["empty_condition_ids"],
+            "corrected_runner_comparison_including_duplicates": coverage}
 
 
 def load_checked(path, task):
@@ -73,19 +95,20 @@ def main():
     from transformers import AutoTokenizer
     root = args.root.resolve()
     tokenizer = AutoTokenizer.from_pretrained(str(asset(root, "t5")), local_files_only=True)
-    report = {"schema": "elf-condition-audit-v1", "tasks": {},
+    report = {"schema": "elf-condition-audit-v2", "tasks": {},
               "auditor_sha256": sha256(Path(__file__)),
+              "helper_sha256": sha256(Path(__file__).with_name("elf_common.py")),
               "assets_manifest_sha256": sha256(root / "data/elf/assets.json")}
     for task, limit in (("wmt14", 64), ("xsum", 1024)):
         raw, raw_binding = load_checked(root / f"data/elf/{task}-validation.jsonl", task)
         official, official_binding = load_checked(root / f"data/elf/{task}-official-validation.jsonl", task)
         print(f"Auditing {task}: raw={len(raw)}, official={len(official)}; no GPU inference", flush=True)
-        result = audit_rows(raw, official, tokenizer, limit)
+        result = audit_rows(raw, official, tokenizer, limit, task)
         result["inputs"] = {"raw": raw_binding, "official": official_binding}
         report["tasks"][task] = result
         print(json.dumps({k: v for k, v in result.items() if k != "inputs"}, indent=2, ensure_ascii=False), flush=True)
     write_json(args.output, report)
-    print(f"Saved {args.output}. Inputs unchanged; no rows removed or replacement tokens inserted.")
+    print(f"Saved {args.output}. Input files unchanged; compared the corrected runner's EOS policy without generating samples.")
 
 
 if __name__ == "__main__":

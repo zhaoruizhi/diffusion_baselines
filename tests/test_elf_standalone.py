@@ -100,7 +100,7 @@ class ELFConditionAudit(unittest.TestCase):
             return str(ids)
 
     def test_preflight_finds_later_empty_row_without_dropping_or_changing_input(self):
-        rows = [{"id": 0, "input": "source"}, {"id": 217, "input": "  "}]
+        rows = [{"id": 0, "input": "source"}, {"id": 217, "input": "  ", "condition_input_ids": []}]
         before = json.dumps(rows)
         with self.assertRaisesRegex(ValueError, "source_id.*217"):
             preflight_conditions(rows, self.Tokenizer(), "xsum", 1024, 1088)
@@ -119,13 +119,42 @@ class ELFConditionAudit(unittest.TestCase):
                {"id": 1, "input": "", "output": "B"}]
         official = [{"id": 10, "input": "", "output": "B", "condition_input_ids": [1]},
                     {"id": 11, "input": "abc", "output": "A", "condition_input_ids": [5, 1]}]
-        report = audit_rows(raw, official, self.Tokenizer(), 64)
+        report = audit_rows(raw, official, self.Tokenizer(), 64, "wmt14")
         self.assertEqual(report["raw"]["empty_condition_ids"], [1])
         self.assertTrue(report["official_conditions_nonempty"])
         comparison = report["comparison_by_exact_source_and_reference_text_not_row_number"]
         self.assertEqual(comparison["unique_text_pair"], 2)
         self.assertEqual(comparison["raw_plus_eos_equals_official"], 2)
         self.assertEqual(comparison["exact_ids"], 0)
+        corrected = report["corrected_runner_comparison_including_duplicates"]
+        self.assertTrue(corrected["ready_for_raw_validation"])
+        self.assertTrue(corrected["full_token_multisets_equal"])
+        self.assertFalse(corrected["same_order_and_full_tokens"])
+
+    def test_task_trained_eos_handles_blank_and_is_added_before_source_cap(self):
+        rows = [{"id": 0, "input": " "}, {"id": 1, "input": "word " * 63},
+                {"id": 2, "input": "word " * 64}]
+        before = json.dumps(rows)
+        ids = preflight_conditions(rows, self.Tokenizer(), "wmt14", 64, 128)
+        self.assertEqual(ids[0], [1])
+        self.assertEqual(ids[1], [6] * 63 + [1])
+        self.assertEqual(ids[2], [6] * 64)
+        self.assertEqual(json.dumps(rows), before)
+        self.assertEqual(preflight_conditions(rows[:1], self.Tokenizer(), "xsum", 1024, 1088), [[1]])
+        self.assertEqual(preflight_conditions([{"id": 0, "input": "word"}], self.Tokenizer(),
+                                             "owt-prefix", 64, 1024), [[6]])
+        with self.assertRaises(ValueError):
+            preflight_conditions(rows[:1], self.Tokenizer(), "owt-prefix", 64, 1024)
+
+    def test_audit_checks_duplicate_multiplicity_and_disagreement(self):
+        raw = [{"id": i, "input": "abc", "output": "A"} for i in range(2)]
+        official = [{**r, "condition_input_ids": [5, 1]} for r in raw]
+        report = audit_rows(raw, official, self.Tokenizer(), 64, "wmt14")
+        self.assertEqual(report["comparison_by_exact_source_and_reference_text_not_row_number"]["ambiguous_text_pair"], 2)
+        self.assertTrue(report["corrected_runner_comparison_including_duplicates"]["ready_for_raw_validation"])
+        official[1]["condition_input_ids"] = [5, 2]
+        report = audit_rows(raw, official, self.Tokenizer(), 64, "wmt14")
+        self.assertFalse(report["corrected_runner_comparison_including_duplicates"]["ready_for_raw_validation"])
 
 
 class ELFDownloadRecovery(unittest.TestCase):

@@ -20,7 +20,7 @@ for path in sorted(args.results.rglob("request.json")):
            "split": (request.get("input") or {}).get("split", ""),
            "status": "incomplete"}
     for key in ("checkpoint_sha256", "source_commit", "gpu_name", "precision", "model_canvas_t5_tokens",
-                "elf_forward_calls_per_sample", "protocol", "batch_size"):
+                "elf_forward_calls_per_sample", "protocol", "batch_size", "condition_tokenization_policy"):
         row[key] = request.get(key, "")
     row["input_sha256"] = (request.get("input") or {}).get("sha256", "")
     metrics_path, timing_path = path.parent / "metrics.json", path.parent / "timing.json"

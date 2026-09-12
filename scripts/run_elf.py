@@ -241,6 +241,9 @@ def main():
         "model_canvas_t5_tokens": config.max_length, "input": input_manifest,
         "protocol": "c64_text_t5_v1" if args.task == "owt-prefix" else "elf_native_v1",
         "conditioning": "zero_shot_ood_native_projection" if args.task == "owt-prefix" else "task_trained" if rows else "none",
+        "condition_tokenization_policy": (
+            "released_ids_or_raw_plus_eos_then_source_cap_v2" if args.task in ("wmt14", "xsum")
+            else "c64_raw_no_special_tokens_v1" if args.task == "owt-prefix" else "none"),
         "elf_forward_calls_per_sample": args.steps * (1 if chosen["cfg"] == 1 else 2) + 1,
         "condition_encoder_calls_per_sample": int(bool(rows)),
         "untimed_preflight": observed,

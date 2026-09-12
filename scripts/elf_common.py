@@ -33,11 +33,21 @@ def read_jsonl(path):
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def condition_token_ids(row, tokenizer):
-    """Keep released IDs exactly; raw text follows the author's JSONL loader."""
+def condition_token_ids(row, tokenizer, *, task=None):
+    """Preserve released IDs; task-trained raw sources include the released EOS.
+
+    task=None retains plain tokenization for auditing the old input path.
+    Append before the model's source cap, exactly as the released Arrow inputs.
+    A C64 continuation is not an ended source sentence and keeps its old policy.
+    """
     ids = row.get("condition_input_ids")
     if ids is None:
         ids = tokenizer(row["input"], add_special_tokens=False, verbose=False)["input_ids"]
+        if task in ("wmt14", "xsum"):
+            eos = tokenizer.eos_token_id
+            if type(eos) is not int or eos < 0:
+                raise ValueError("Task-trained ELF conditions require a valid EOS token")
+            ids = ids + [eos]
     vocab_size = len(tokenizer)
     if not isinstance(ids, list) or any(type(t) is not int or t < 0 or t >= vocab_size for t in ids):
         raise ValueError(f"Invalid condition IDs at source_id={row.get('id')}")
@@ -48,7 +58,7 @@ def preflight_conditions(rows, tokenizer, task, max_input_length, max_length):
     """Validate the whole requested input before loading weights; never drop rows."""
     prepared, failures = [], []
     for index, row in enumerate(rows):
-        ids = condition_token_ids(row, tokenizer)
+        ids = condition_token_ids(row, tokenizer, task=task)
         if task == "owt-prefix":
             fits = 0 < len(ids) < max_length - 64
         else:
