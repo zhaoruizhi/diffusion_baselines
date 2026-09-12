@@ -32,29 +32,19 @@
 
 本轮无需训练你的方法；先保存 ELF 基线。WMT14 是德译英，XSum 是摘要。
 
-**B. 选卡：候选物理 GPU 3，但目前不能当成独占空卡**
+**B. 固定使用物理 GPU 2（2026-09-12 更新）**
 
-你给的 `nvidia-smi` 快照是 2026-09-11 10:47:49；这些是当时状态，执行前必须重新查询。
+你已确认当前空闲的是 **2 号 H200 NVL**，本轮所有实验固定使用物理 GPU 2。此前 9 月 11 日快照里的占用情况已过时，不再按物理 GPU 3 安排。正式 timing 期间仍保持该卡独占，不与其他生成、评测或训练进程并行。
 
-| 物理卡号 | 型号 | 当时占用显存 MiB | 利用率 | 判断 |
-|---|---|---:|---:|---|
-| 0 / 1 | H200 NVL | 103207 / 103023 | 88% / 88% | 正在高负载运行 |
-| 2 | H200 NVL | 140305 / 143771 总量 | 85% | 接近满显存 |
-| 3 | H200 NVL | 18503 / 143771 总量 | 0% | 候选，但有 PID 3572809 `ray::WorkerDict` |
-| 4 / 5 / 6 / 7 | H200 NVL | 各约 6200 | 60%–77% | 显存占用少，但计算繁忙 |
-
-建议取得 **物理卡 3 的使用时段**，待现有 Ray 任务自然结束或由任务所有者释放。不要仅凭 0% 利用率当它空闲，不要直接终止该 PID。若你有权与现有任务共享，可做功能 smoke；**用于比较速度的正式 timing 必须在同卡没有其他任务时重测**。如果另一张 H200 先释放，就在下面把 `ELF_PHYSICAL_GPU=3` 改成那张卡号，并在本轮始终使用它。
-
-先拉取本文与脚本，再查看占用：
+先拉取文档更新，并记录开始前的 2 号卡状态：
 
 ```bash
 cd ~/diffusion_baseline
 git pull --ff-only origin main
-nvidia-smi -i 3
-ps -p 3572809 -o user,pid,etime,args
+nvidia-smi -i 2
 ```
 
-`ps` 仅查询快照中那个 PID 的当前信息，不会停止它；它若已经退出，重新以 `nvidia-smi -i 3` 的进程列表为准。也可在另一终端用 `watch -n 2 nvidia-smi` 查看变化。确定卡可以使用后，再执行下面的环境设置。
+下面通过物理 GPU 2 的 UUID 绑定进程，所有后续命令自动沿用该卡。本轮结果使用 `results/elf-h200-gpu2`，先前目录保持原样；无需重新下载或预处理。
 
 长任务建议放在 tmux 中：若服务器已安装 tmux，先 `tmux new -s elf-h200`，然后在其中运行后续命令；离开按 Ctrl+B 再按 D，回来执行 `tmux attach -t elf-h200`。没有 tmux 时可先在当前 SSH 终端做 smoke，长任务前再安排不会断线的运行方式。
 
@@ -65,13 +55,13 @@ export DLB_ROOT="$PWD"
 export ELF_PYTHON="$CONDA_PREFIX/bin/python"
 export PYTHONDONTWRITEBYTECODE=1
 
-# 这里的 3 指 nvidia-smi 显示的物理卡号。
-export ELF_PHYSICAL_GPU=3
+# 这里的 2 指 nvidia-smi 显示的物理卡号。
+export ELF_PHYSICAL_GPU=2
 export ELF_GPU_UUID="$(nvidia-smi -i "$ELF_PHYSICAL_GPU" --query-gpu=uuid --format=csv,noheader)"
 export CUDA_VISIBLE_DEVICES="$ELF_GPU_UUID"
 
 # 使用新的固定目录，避免与之前尝试过的结果混在一起。
-export ELF_RESULTS="$DLB_ROOT/results/elf-h200"
+export ELF_RESULTS="$DLB_ROOT/results/elf-h200-gpu2"
 export ELF_BATCH_SIZE=8
 export ELF_EVAL_BATCH_SIZE=8
 export ELF_SEED=42
@@ -132,21 +122,21 @@ PY
 成功标志：每格进度到 `2/2 samples`、无 traceback、对应目录出现 `generation.json` 和 `samples.jsonl`。例如：
 
 ```text
-results/elf-h200/smoke/owt/unconditional/steps_32/seed_42/compile_0/
-results/elf-h200/smoke/wmt14/official-validation/steps_64/seed_42/compile_0/
-results/elf-h200/smoke/xsum/official-validation/steps_64/seed_42/compile_0/
+results/elf-h200-gpu2/smoke/owt/unconditional/steps_32/seed_42/compile_0/
+results/elf-h200-gpu2/smoke/wmt14/official-validation/steps_64/seed_42/compile_0/
+results/elf-h200-gpu2/smoke/xsum/official-validation/steps_64/seed_42/compile_0/
 ```
 
 smoke 是功能检查，不凭两个样本判断论文质量；1 步生成很差也不等于实现错误。若失败，把对应 `logs/smoke_*.log` 的 traceback 发来。首次模型加载与文件校验期间可能暂时没有采样进度，不要因此再开第二份进程。
 
 **D. 1000 样本 sanity：确认质量合理，再花时间扫全集**
 
-这一节单独存到 `results/elf-h200-sanity`，不会覆盖后面的正式 1024 样本或完整 validation。
+这一节单独存到 `results/elf-h200-gpu2-sanity`，不会覆盖后面的正式 1024 样本或完整 validation。
 
 ```bash
 (
   set -e
-  export ELF_RESULTS="$DLB_ROOT/results/elf-h200-sanity"
+  export ELF_RESULTS="$DLB_ROOT/results/elf-h200-gpu2-sanity"
   mkdir -p "$ELF_RESULTS/logs"
   runlog owt32_generate env ELF_COUNT=1000 ELF_STEPS=32 bash scripts/run_elf_suite.sh generate owt
   runlog owt32_evaluate env ELF_STEPS=32 bash scripts/run_elf_suite.sh evaluate owt
@@ -159,7 +149,7 @@ smoke 是功能检查，不凭两个样本判断论文质量；1 步生成很差
 
 `generate` 只生成并保存样本；`evaluate` 才计算指标。评测成功会打印 JSON 并保存 `metrics.json`。OWT 32 步论文参考 PPL≈24、entropy≈5.15；WMT14 BLEU 和 XSum ROUGE 的论文 test 参考分别为 26.4、36.0/12.2/27.8。这些只是量级参照，当前 sanity 使用 1000 条 official-validation，不能当作 test 全集结果。明显偏离时先检查日志与样本，不根据 test 分数反复调参。
 
-括号结束后，`ELF_RESULTS` 自动回到 B 设置的 `results/elf-h200`，不需要手动 unset。
+括号结束后，`ELF_RESULTS` 自动回到 B 设置的 `results/elf-h200-gpu2`，不需要手动 unset。
 
 **E. 核心正式质量实验：OWT → WMT14 → XSum**
 
@@ -248,8 +238,8 @@ nvidia-smi -i "$ELF_GPU_UUID"
 每个格子固定 batch=1、5 次 warmup、32 次重复；无需将 `ELF_BATCH_SIZE=8` 改为 1，timing 入口会强制传 1。保存位置例：
 
 ```text
-results/elf-h200/timing/owt/unconditional/steps_32/seed_42/compile_0/prompt_0/timing.json
-results/elf-h200/timing/xsum/validation/steps_64/seed_42/compile_0/prompt_0/timing.json
+results/elf-h200-gpu2/timing/owt/unconditional/steps_32/seed_42/compile_0/prompt_0/timing.json
+results/elf-h200-gpu2/timing/xsum/validation/steps_64/seed_42/compile_0/prompt_0/timing.json
 ```
 
 主要读取 `results.sampler.seconds_per_sample`；条件任务读取 `results.sampler_cached_condition.seconds_per_sample` 和 `results.encoder_plus_sampler.seconds_per_sample`，后者包含 T5 条件编码。它们包含最终神经网络解码，不含加载、CPU tokenizer、磁盘 IO 和指标计算。不要把 generation 的总 wall time 当作正式延迟。
@@ -317,15 +307,15 @@ python scripts/summarize_elf.py \
 
 | 目录 | 内容 |
 |---|---|
-| `results/elf-h200/logs/` | 每个步骤的终端日志 |
-| `results/elf-h200/smoke/` | 小样本功能检查，不能当正式质量结果 |
-| `results/elf-h200/quality/` | 正式 samples、generation manifest、metrics |
-| `results/elf-h200/timing/` | 原始重复测量、均值/中位数/标准差 |
-| `results/elf-h200/environment/` | 物理 GPU UUID 映射、环境和 GPU 快照 |
-| `results/elf-h200-sanity/` | 1000 样本预检查，与主实验分开 |
+| `results/elf-h200-gpu2/logs/` | 每个步骤的终端日志 |
+| `results/elf-h200-gpu2/smoke/` | 小样本功能检查，不能当正式质量结果 |
+| `results/elf-h200-gpu2/quality/` | 正式 samples、generation manifest、metrics |
+| `results/elf-h200-gpu2/timing/` | 原始重复测量、均值/中位数/标准差 |
+| `results/elf-h200-gpu2/environment/` | 物理 GPU UUID 映射、环境和 GPU 快照 |
+| `results/elf-h200-gpu2-sanity/` | 1000 样本预检查，与主实验分开 |
 
 核心 E+F 的主质量格子共 16 个，相应 G timing 共 16 个；H1 另加 2 个 test 质量格子和 2 个 timing 格子。某项没跑就应留作 missing，不用别的 split 或 sanity 数据补数。summary 是逐 run 清单，质量和 timing 分开列，smoke 也可能显示 incomplete；不是完成度证明或自动排好的论文表。
 
-失败目录不会被覆盖。若某次失败且目录已存在，先保留日志，用新的 `ELF_RESULTS` 目录（例如 `results/elf-h200-retry1`）只重跑失败点；评测时要指向相同新目录。已经成功生成但尚未评测的点，只执行 evaluate；已经有质量结果而缺 timing，只执行 timing。不要在同一根目录里改变 seed/batch/compile 或样本数后覆写同一格。
+失败目录不会被覆盖。若某次失败且目录已存在，先保留日志，用新的 `ELF_RESULTS` 目录（例如 `results/elf-h200-gpu2-retry1`）只重跑失败点；评测时要指向相同新目录。已经成功生成但尚未评测的点，只执行 evaluate；已经有质量结果而缺 timing，只执行 timing。不要在同一根目录里改变 seed/batch/compile 或样本数后覆写同一格。
 
 如果 shell 断开后要恢复，先重新设置 B 中的变量和 `runlog` 函数，查询当前 GPU 占用，再从未完成的阶段继续。此次只补充操作步骤，没有在服务器代跑；GPU 数值与实际耗时仍由 C 开始验证。
