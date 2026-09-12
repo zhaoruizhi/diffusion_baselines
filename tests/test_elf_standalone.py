@@ -12,7 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from elf_common import SOURCE_COMMIT, default_sampling, manifest, sha256, write_json
+from elf_common import SOURCE_COMMIT, default_sampling, manifest, preflight_conditions, sha256, write_json
+from audit_elf_inputs import audit_rows
 from evaluate_elf import validate_records
 from run_elf import parse_args
 from prepare_elf import download_snapshot, retry_delay, official_arrow_rows, raw_parquet_rows, export_rows
@@ -83,6 +84,48 @@ class ELFContracts(unittest.TestCase):
             self.assertTrue(generated[generated.index("--input") + 1].endswith("wmt14-test.jsonl"))
             timed = subprocess.check_output(["bash", str(root / "scripts/run_elf_suite.sh"), "timing", "xsum"], env=env, text=True).splitlines()
             self.assertEqual(timed[timed.index("--batch-size") + 1], "1")
+
+
+class ELFConditionAudit(unittest.TestCase):
+    class Tokenizer:
+        eos_token_id = 1
+
+        def __len__(self):
+            return 100
+
+        def __call__(self, text, **kwargs):
+            return {"input_ids": [2 + len(word) for word in text.split()]}
+
+        def decode(self, ids, **kwargs):
+            return str(ids)
+
+    def test_preflight_finds_later_empty_row_without_dropping_or_changing_input(self):
+        rows = [{"id": 0, "input": "source"}, {"id": 217, "input": "  "}]
+        before = json.dumps(rows)
+        with self.assertRaisesRegex(ValueError, "source_id.*217"):
+            preflight_conditions(rows, self.Tokenizer(), "xsum", 1024, 1088)
+        self.assertEqual(json.dumps(rows), before)
+
+    def test_official_ids_preserved_even_when_text_is_blank_and_prefix_not_truncated(self):
+        row = {"id": 217, "input": "", "condition_input_ids": [1]}
+        self.assertEqual(preflight_conditions([row], self.Tokenizer(), "xsum", 1024, 1088), [[1]])
+        long = {"id": 0, "input": "", "condition_input_ids": [3] * 65}
+        self.assertEqual(len(preflight_conditions([long], self.Tokenizer(), "wmt14", 64, 128)[0]), 64)
+        with self.assertRaises(ValueError):
+            preflight_conditions([long], self.Tokenizer(), "owt-prefix", 64, 128)
+
+    def test_audit_matches_text_pairs_across_reordering_and_exposes_eos_difference(self):
+        raw = [{"id": 0, "input": "abc", "output": "A"},
+               {"id": 1, "input": "", "output": "B"}]
+        official = [{"id": 10, "input": "", "output": "B", "condition_input_ids": [1]},
+                    {"id": 11, "input": "abc", "output": "A", "condition_input_ids": [5, 1]}]
+        report = audit_rows(raw, official, self.Tokenizer(), 64)
+        self.assertEqual(report["raw"]["empty_condition_ids"], [1])
+        self.assertTrue(report["official_conditions_nonempty"])
+        comparison = report["comparison_by_exact_source_and_reference_text_not_row_number"]
+        self.assertEqual(comparison["unique_text_pair"], 2)
+        self.assertEqual(comparison["raw_plus_eos_equals_official"], 2)
+        self.assertEqual(comparison["exact_ids"], 0)
 
 
 class ELFDownloadRecovery(unittest.TestCase):

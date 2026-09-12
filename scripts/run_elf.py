@@ -15,7 +15,7 @@ import sys
 import time
 
 from elf_common import (ROOT, SOURCE_COMMIT, asset, default_sampling, manifest, offline,
-                        read_jsonl, require_server, sha256, source_path, write_json)
+                        preflight_conditions, read_jsonl, require_server, sha256, source_path, write_json)
 
 
 def parse_args(argv=None):
@@ -78,7 +78,6 @@ def main():
         raise RuntimeError("A CUDA GPU supporting bf16 is required for the author precision policy")
     if args.output.exists():
         raise FileExistsError(f"Use a fresh output directory: {args.output}")
-    args.output.mkdir(parents=True)
     device = torch.device("cuda")
     torch.set_float32_matmul_precision("high")
     torch.manual_seed(args.seed)
@@ -114,6 +113,31 @@ def main():
                         sde_gamma=chosen["gamma"])
     t5_path = asset(root, "t5")
     tokenizer = AutoTokenizer.from_pretrained(str(t5_path), local_files_only=True)
+    rows = []
+    input_manifest = None
+    if args.input:
+        args.input = args.input.resolve()
+        input_manifest = json.loads(args.input.with_suffix(".manifest.json").read_text())
+        if input_manifest["sha256"] != sha256(args.input) or input_manifest["task"] != args.task:
+            raise ValueError("Input manifest does not match task/file")
+        rows = read_jsonl(args.input)
+        if not rows or len(rows) != input_manifest["count"] or len({r["id"] for r in rows}) != len(rows):
+            raise ValueError("Input counts/IDs do not match manifest or input is empty")
+        if args.num_samples > len(rows) and args.mode == "generate":
+            raise ValueError("Requested more prompts than input rows")
+        if args.mode == "timing":
+            if not 0 <= args.timing_prompt_index < len(rows):
+                raise ValueError("Timing prompt index out of range")
+            selected = [rows[0], rows[args.timing_prompt_index]]
+        else:
+            selected = rows[:args.num_samples] if args.num_samples else rows
+        print(f"Checking {len(selected)} conditions before loading ELF weights: {args.input}", flush=True)
+        tokens = preflight_conditions(selected, tokenizer, args.task, config.max_input_length, config.max_length)
+        for row, ids in zip(selected, tokens):
+            row["_elf_condition_ids"] = ids
+    args.output.mkdir(parents=True)
+    print(f"ELF {args.mode}: task={args.task}, steps={args.steps}, "
+          f"split={(input_manifest or {}).get('split', 'unconditional')}, output={args.output}", flush=True)
     checkpoint_dir = asset(root, checkpoint_task)
     assets = manifest(root)
     checkpoint = checkpoint_dir / assets["assets"][checkpoint_task]["checkpoint"]
@@ -131,19 +155,7 @@ def main():
     model = model.to(device).eval().requires_grad_(False)
     del payload
     encoder = None
-    rows = []
-    input_manifest = None
     if args.input:
-        args.input = args.input.resolve()
-        input_manifest_path = args.input.with_suffix(".manifest.json")
-        input_manifest = json.loads(input_manifest_path.read_text())
-        if input_manifest["sha256"] != sha256(args.input) or input_manifest["task"] != args.task:
-            raise ValueError("Input manifest does not match task/file")
-        rows = read_jsonl(args.input)
-        if len(rows) != input_manifest["count"] or len({r["id"] for r in rows}) != len(rows):
-            raise ValueError("Input counts/IDs do not match manifest")
-        if args.num_samples > len(rows) and args.mode == "generate":
-            raise ValueError("Requested more prompts than input rows")
         _, encoder = get_encoder(str(t5_path), torch.float32)
         encoder = encoder.to(device).eval().requires_grad_(False)
     def prepare(batch_rows):
@@ -152,16 +164,7 @@ def main():
         ids = torch.full((batch, config.max_length), tokenizer.pad_token_id, device=device, dtype=torch.long)
         lens = []
         for i, row in enumerate(batch_rows):
-            condition = row.get("condition_input_ids")
-            if condition is None:
-                condition = tokenizer(row["input"], add_special_tokens=False)["input_ids"]
-            if args.task == "owt-prefix":
-                if not 0 < len(condition) < config.max_length - 64:
-                    raise ValueError("C64 text does not fit ELF canvas; do not silently truncate")
-            else:
-                condition = condition[:config.max_input_length]
-            if not condition:
-                raise ValueError("Empty condition")
+            condition = row["_elf_condition_ids"]
             ids[i, :len(condition)] = torch.tensor(condition, device=device)
             lens.append(len(condition))
         mask = (np.arange(config.max_length)[None, :] < np.array(lens)[:, None])

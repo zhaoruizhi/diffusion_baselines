@@ -33,6 +33,40 @@ def read_jsonl(path):
         return [json.loads(line) for line in handle if line.strip()]
 
 
+def condition_token_ids(row, tokenizer):
+    """Keep released IDs exactly; raw text follows the author's JSONL loader."""
+    ids = row.get("condition_input_ids")
+    if ids is None:
+        ids = tokenizer(row["input"], add_special_tokens=False, verbose=False)["input_ids"]
+    vocab_size = len(tokenizer)
+    if not isinstance(ids, list) or any(type(t) is not int or t < 0 or t >= vocab_size for t in ids):
+        raise ValueError(f"Invalid condition IDs at source_id={row.get('id')}")
+    return ids
+
+
+def preflight_conditions(rows, tokenizer, task, max_input_length, max_length):
+    """Validate the whole requested input before loading weights; never drop rows."""
+    prepared, failures = [], []
+    for index, row in enumerate(rows):
+        ids = condition_token_ids(row, tokenizer)
+        if task == "owt-prefix":
+            fits = 0 < len(ids) < max_length - 64
+        else:
+            ids = ids[:max_input_length]
+            fits = bool(ids)
+        if not fits:
+            failures.append({"row_index": index, "source_id": row.get("id"), "tokens": len(ids)})
+        prepared.append(ids)
+    if failures:
+        raise ValueError(
+            f"Invalid/empty ELF conditions: {len(failures)}/{len(rows)}; "
+            f"first affected rows (zero-based): {failures[:20]}. No samples were dropped. "
+            "Run scripts/audit_elf_inputs.py to compare raw and official inputs; "
+            "do not invent source text or delete rows to bypass this check."
+        )
+    return prepared
+
+
 def require_server():
     if sys.platform != "linux":
         raise RuntimeError("ELF downloads and GPU experiments must run on the Linux server.")

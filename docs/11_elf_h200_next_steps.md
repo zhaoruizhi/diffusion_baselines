@@ -1,5 +1,7 @@
 # DS210029：数据准备完成后，用单张 H200 跑 ELF
 
+**最新状态：原始 XSum validation 在 216 条后因空条件中断，WMT14 原始 validation 的 BLEU≈13–14 待调查。请优先按 [文档 12 的诊断与恢复步骤](12_elf_condition_recovery.md) 继续，暂停本页 E/G/H 中原始 `validation/test` 的 WMT14/XSum 命令。** OWT 与前缀步骤仍可使用；不要整体重跑已经完成的格子。
+
 这份步骤从你 **2026-09-11 已完成数据导出** 的状态开始。按 A → B → C → D → E → F → G → H 顺序执行。所有命令都在服务器 `~/diffusion_baseline`；不再执行 Conda 创建、pip 安装、源码下载或 `prepare_elf.py assets/data`。模型推理均使用同一张 H200、单进程、generation batch=8；正式 timing 固定 batch=1。
 
 **2026-09-12 sanity 日志更新：C/D 已成功完成，不再执行。** 先阅读 D1 的指标判读；如果换了 shell，按 B 恢复环境，然后执行 E。F 尚未准备时可以先执行 G 的前三个任务；前缀 timing 已单列为可选后续命令。
