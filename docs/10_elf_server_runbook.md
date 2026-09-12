@@ -1,5 +1,47 @@
 # ELF 加入 baseline：服务器实验方案与操作步骤
 
+**当前总进度：OWT 多步无条件生成仍是必需实验，不能用 WMT14/XSum 替代；timing 按用户要求暂缓。** 最近集中修复条件输入 EOS，不表示缩减实验范围。按已收到的服务器结果：
+
+| 实验 | 已确认完成 | 尚需核实或补齐 |
+|---|---|---|
+| OWT unconditional sanity | 32 步、1000 条；PPL 24.4239、entropy 5.1671 | 不能把此 sanity 充当正式 1024 条多步曲线 |
+| OWT unconditional 正式质量 | 此前已给出 8/16/32/64 步命令，但尚未收到对应结果表 | 先检查旧根目录，补缺失核心步数，再补 1/2/4/128/256/512/1024 |
+| WMT14 validation | 修复后 64 步、3000 条，BLEU 26.6741 | 8/16/32 步命令已给出，尚未收到结果 |
+| XSum validation | 修复后 64 步、11332 条，ROUGE 36.0270/12.3522/27.8165 | 8/16/32 步命令已给出，尚未收到结果 |
+| OWT 前缀续写 | 尚未收到结果 | 独立于以上三项，仍按文档 11 的 F 准备和运行 |
+| WMT14/XSum test | 尚未收到结果 | validation 配置冻结后执行 |
+| 所有正式 timing | 用户要求暂缓 | GPU 独占时再测 |
+
+OWT 正式质量最初写在 `results/elf-h200-gpu2`；EOS 修复后的条件实验写在 `results/elf-h200-gpu2-eos-v2`。只检查后者会误以为没有跑过 OWT。下面只读扫描所有 ELF 根目录，不重新生成或评测；`valid` 是已有指标文件记录的状态，此清单不替代 SHA256 完整性校验。
+
+```bash
+cd ~/diffusion_baseline
+python - <<'PY'
+import json
+from pathlib import Path
+for steps in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024):
+    paths = sorted(Path('results').glob(
+        f'elf*/quality/owt/unconditional/steps_{steps}/seed_42/compile_0'))
+    if not paths:
+        print(f'{steps:>4} steps: 未找到质量目录')
+    for path in paths:
+        mp, gp = path / 'metrics.json', path / 'generation.json'
+        if mp.exists():
+            r = json.loads(mp.read_text())
+            m = r['metrics']
+            print(f'{steps:>4} steps: N={r["sample_count"]}, valid={r.get("valid")}, '
+                  f'PPL={m.get("generative_ppl", {}).get("perplexity")}, '
+                  f'entropy={m.get("entropy_gpt2_nats")}, path={path}')
+        elif gp.exists():
+            r = json.loads(gp.read_text())
+            print(f'{steps:>4} steps: 已生成 {r["sample_count"]} 条，缺指标；path={path}')
+        else:
+            print(f'{steps:>4} steps: 目录存在但生成未完成；path={path}')
+PY
+```
+
+正式 OWT 格子要求每步 1024 条，seed=42。先拿到这张清单，再只补缺失步骤：有完整生成文件时只 evaluate；没有目录时 generate 后 evaluate；未完成目录保留并用新重试根目录处理。已确认成功的 OWT 不受条件 EOS 修复影响，无需重跑。质量可与同伴的小进程共享 GPU，但不要与自己的 WMT14/XSum 生成同时占用同一张卡。OWT 与旧 baseline 的 tokenizer、EOS 和实际输出长度差异见下文“可比性”，不能仅把两种 native token 的 entropy 放进同一列。
+
 **同步故障补充：若看到 `Cannot fast-forward to multiple branches`，代码尚未更新，不能继续运行实验。请先按 [文档 13 第 1 步](13_elf_eos_fix.md) 显式 fetch/merge 并验证 EOS 提交。该节也解释 GPU 2 上小进程对质量运行和正式 timing 的不同影响。**
 
 **最新修复：服务器诊断确认原始 WMT14/XSum 条件缺少作者预处理中的 EOS，造成 XSum 空条件中断，并解释了 WMT14 降分的输入差异。请优先执行 [EOS 修复后的恢复步骤](13_elf_eos_fix.md)：更新代码、CPU 对照检查、重跑条件 64 步全集，再测其余质量和 timing。** OWT 与已有 official-validation 结果保留；旧原始条件生成结果不能只重算指标。使用新结果目录，无需重新下载或导出数据。
@@ -8,7 +50,7 @@
 
 核查日期：2026-09-10。先用官方公开权重建立 ELF 的质量和耗时基线；你的方法尚未训练 WMT14/XSum，本轮不安排训练。所有下载、环境安装和模型运行都在 Linux GPU 服务器完成。本地新增的是锁文件、脚本、CPU 合约检查和本文档。
 
-**交付状态（2026-09-12 更新）：** 下述独立 ELF 入口已做本地 CPU 合约检查与语法检查；用户提供的服务器日志进一步证明单张 H200 CUDA 检查、三项 smoke、三项 1000 样本 sanity 生成和评测成功。尚未收到正式全集、OWT 前缀或 timing 结果，不能声称完整复现论文或已经取得加速。旧的 `run_one.sh --model elf`、`run_all.sh`、conditional registry 和严格聚合器**尚不支持 ELF**；请使用本文新增的入口。结果根目录可由 `ELF_RESULTS` 指定，当前主实验用 `results/elf-h200-gpu2/`，不改动已有矩阵。
+**交付状态（2026-09-12 更新）：** 下述独立 ELF 入口已做本地 CPU 合约检查与语法检查；服务器结果确认 CUDA、三项 smoke/sanity，以及 EOS 修复后两项完整 validation 的 64 步质量。OWT 正式多步完成情况待顶部清单核实，不能声称完整实验矩阵已完成或已经取得加速。旧的 `run_one.sh --model elf`、`run_all.sh`、conditional registry 和严格聚合器**尚不支持 ELF**；请使用本文新增的入口。结果根目录由 `ELF_RESULTS` 指定，OWT 原根目录与条件 EOS 修复根目录不同，不改动已有矩阵。
 
 **1. 本次需要跑什么**
 
