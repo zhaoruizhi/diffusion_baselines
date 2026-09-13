@@ -14,6 +14,7 @@ from unittest.mock import Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from elf_common import SOURCE_COMMIT, default_sampling, manifest, preflight_conditions, sha256, write_json
 from audit_elf_inputs import audit_rows
+from inspect_elf_progress import inspect_run
 from evaluate_elf import validate_records
 from run_elf import parse_args
 from prepare_elf import download_snapshot, retry_delay, official_arrow_rows, raw_parquet_rows, export_rows
@@ -155,6 +156,58 @@ class ELFConditionAudit(unittest.TestCase):
         official[1]["condition_input_ids"] = [5, 2]
         report = audit_rows(raw, official, self.Tokenizer(), 64, "wmt14")
         self.assertFalse(report["corrected_runner_comparison_including_duplicates"]["ready_for_raw_validation"])
+
+
+class ELFProgressInventory(unittest.TestCase):
+    def create_run(self, path):
+        request = {"task": "owt", "steps": 32, "seed": 42, "compile": False}
+        write_json(path / "request.json", request)
+        samples = path / "samples.jsonl"
+        samples.write_text(''.join(json.dumps({"id": i, "prompt_id": i, "completion_id": 0}) + '\n' for i in range(2)))
+        gen = {**request, "sample_count": 2, "prompt_count": 2, "samples_sha256": sha256(samples)}
+        write_json(path / "generation.json", gen)
+        return {"task": "owt", "sample_count": 2, "samples_sha256": sha256(samples),
+                "generation_manifest_sha256": sha256(path / "generation.json"),
+                "valid": True, "metrics": {"entropy_gpt2_nats": 5.1}}
+
+    def test_generated_only_and_sanity_are_not_primary_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            metrics = self.create_run(path)
+            self.assertEqual(inspect_run(path)["status"], "needs_evaluation")
+            write_json(path / "metrics.json", metrics)
+            result = inspect_run(path)
+            self.assertEqual(result["status"], "quality_valid")
+            self.assertFalse(result["owt_main_grid"])
+
+    def test_changed_samples_do_not_count_as_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            write_json(path / "metrics.json", self.create_run(path))
+            with (path / "samples.jsonl").open('a') as f:
+                f.write('{}\n')
+            self.assertEqual(inspect_run(path)["status"], "invalid_artifact")
+
+    def test_invalid_quality_is_retained_as_distinct_from_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            metrics = self.create_run(path)
+            metrics.update(valid=False, reason="Degenerate output")
+            write_json(path / "metrics.json", metrics)
+            self.assertEqual(inspect_run(path)["status"], "quality_invalid")
+
+    def test_default_owt_grid_matches_legacy_seven_steps(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            stub = Path(directory) / "fake-python"
+            stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            stub.chmod(0o755)
+            env = dict(os.environ, ELF_PYTHON=str(stub), DLB_ROOT=str(root))
+            env.pop("ELF_STEPS", None)
+            output = subprocess.check_output(["bash", str(root / "scripts/run_elf_suite.sh"), "generate", "owt"],
+                                             env=env, text=True).splitlines()
+            steps = [output[i + 1] for i, value in enumerate(output) if value == "--steps"]
+            self.assertEqual(steps, ["1", "2", "4", "8", "16", "32", "1024"])
 
 
 class ELFDownloadRecovery(unittest.TestCase):

@@ -10,7 +10,7 @@ case "$task" in owt|owt-prefix|wmt14|xsum) ;; *) exit 2 ;; esac
 seed="${ELF_SEED:-42}"
 split="${ELF_SPLIT:-validation}"
 compiled="${ELF_COMPILE:-0}"
-steps_default="1 2 4 8 16 32 64 128 256 512 1024"
+steps_default="1 2 4 8 16 32 1024"
 if [[ "$task" == wmt14 || "$task" == xsum ]]; then steps_default="1 2 4 8 16 32 64"; fi
 read -r -a steps_list <<< "${ELF_STEPS:-$steps_default}"
 input_args=()

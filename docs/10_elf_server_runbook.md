@@ -1,5 +1,26 @@
 # ELF 加入 baseline：服务器实验方案与操作步骤
 
+**最新主表范围：按用户要求，OWT 无条件和前缀入口的默认步数收敛为 `1/2/4/8/16/32/1024`，与旧 many-step grid 一致。64/128/256 是辅助结果，不再安排补跑到主表；已完成的64步仍保留。timing 暂缓。** 下方文档14中补128/256的旧安排不再执行。
+
+生成端的1024 T5 tokens仍不等于旧协议的1024 GPT-2 tokens，公开 ELF 权重无法直接更换词表。统一 PPL 函数不等于已经统一整个生成/entropy/EOS协议；此次仅调整默认步数和加入进度核验，不改评分、不覆盖任何已有样本或指标。若要求严格一致的生成词表/长度，需要另外评估重新训练；若保留公开权重，则必须明确该例外，再确定共用文本评分政策。不要在这个选择前盲目重跑已有 OWT 样本来试图消除协议差异。
+
+**先在服务器运行以下只读清单，确定哪些配置确实缺失。** 它校验 samples/generation/metrics 的计数与哈希，输出 `quality_valid`（已有有效结果）、`quality_invalid`（已记录无效质量，不能当作未运行）、`needs_evaluation`（只补评分）、`incomplete_generation`（生成未完成）、`invalid_artifact`（需排查）。它检查的是保存文件之间的一致性，不证明旧协议与新协议等价。历史无EOS的条件格子也保留列出，通过路径和 condition_policy 区分。
+
+```bash
+(
+  set -e
+  cd ~/diffusion_baseline
+  git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+  git merge --ff-only refs/remotes/origin/main
+  python scripts/inspect_elf_progress.py --root "$PWD" \
+    --output "$PWD/results/elf-progress.json"
+)
+```
+
+最新追加的 test 日志只直接显示 XSum 全集11334条、ROUGE=35.9502/12.2767/27.7115、empty=0；按旧循环它应是64步，但正式归档按清单中的 request/generation steps确认。不能凭一个终端指标块断言 WMT14/XSum 的32/64步四格全部成功，也不能重复启动该 test 循环。
+
+已知无需重新生成：EOS修复后 WMT14/XSum validation 的8/16/32/64八格。旧无EOS WMT14低分格子已由这些结果替代，不再补救。OWT的8/16/32四格保留为当前发布配置结果（64步保留为辅助）；如最终只改评分且原始输出包含所需内容，只需重评分。如果决定统一为旧全canvas处理，由于当前ELF已在保存前清除首EOS及之后tokens，现有文件无法恢复被清除部分，必须另行实现完整输出保存后重新生成，不能只改entropy公式声称对齐。是否需要该重跑取决于尚待明确的可比协议。
+
 **2026-09-13 最新进度：12 个正式质量配置已完成。后续请执行 [剩余质量实验步骤](14_elf_quality_remaining.md)，不要再重复核心 8/16/32/64 步。timing 继续暂缓。**
 
 | 实验 | 已确认完成 | 尚需补齐 |
