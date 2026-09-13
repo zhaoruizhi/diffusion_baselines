@@ -97,5 +97,6 @@ bash scripts/run_one.sh --model flm --dataset lm1b --steps 1 \
 - [ELF：DS210029 数据就绪后的单张 H200 逐步执行清单](docs/11_elf_h200_next_steps.md)
 - [ELF：正式条件实验空输入故障、数据诊断与恢复](docs/12_elf_condition_recovery.md)
 - [ELF：条件输入 EOS 修复、validation/test 与 timing 恢复](docs/13_elf_eos_fix.md)
+- [ELF：9 月 13 日结果总览与剩余质量实验（timing 暂缓）](docs/14_elf_quality_remaining.md)
 
 所有可复现输入均在 `artifacts/` 和 `configs/` 中锁定。不要把 `data/`、`checkpoints/`、`upstreams/`、`results/` 或 Conda archive 提交到 Git。
