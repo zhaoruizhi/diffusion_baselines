@@ -94,6 +94,7 @@ bash scripts/run_one.sh --model flm --dataset lm1b --steps 1 \
 - [4-GPU 本地并行运行](docs/09_four_gpu_local.md)
 - [实验矩阵](docs/EXPERIMENT_MATRIX.md)
 - [ELF：OWT、前缀续写、WMT14/XSum 与服务器 timing 方案](docs/10_elf_server_runbook.md)（独立入口；先用公开权重建立基线）
+- [ELF：GPU 0、1 自动核验并补齐质量实验](docs/15_elf_gpu01_queue.md)（最新执行入口；复用已完成配置）
 - [ELF：DS210029 数据就绪后的单张 H200 逐步执行清单](docs/11_elf_h200_next_steps.md)
 - [ELF：正式条件实验空输入故障、数据诊断与恢复](docs/12_elf_condition_recovery.md)
 - [ELF：条件输入 EOS 修复、validation/test 与 timing 恢复](docs/13_elf_eos_fix.md)

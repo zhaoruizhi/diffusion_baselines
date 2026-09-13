@@ -18,7 +18,8 @@ def inspect_run(path):
         request = json.loads((path / "request.json").read_text())
         row.update(task=request["task"], steps=request["steps"], seed=request["seed"],
                    compile=request["compile"],
-                   split=(request.get("input") or {}).get("split", "unconditional"),
+                   split=(request.get("input") or {}).get(
+                       "split", "c64-text-t5" if request["task"] == "owt-prefix" else "unconditional"),
                    protocol=request.get("protocol"),
                    condition_policy=request.get("condition_tokenization_policy"))
         gp = path / "generation.json"
