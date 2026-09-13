@@ -209,6 +209,37 @@ ELF_STEPS="1 2 4 128 256 512 1024" bash scripts/run_elf_suite.sh timing owt
 
 **可比性：** 原生 ELF 长度 1024 指 T5 tokens，旧 OWT 模型长度 1024 指 GPT-2 tokens。本文把生成文本重新用同一个 GPT-2 tokenizer 分词，PPL/entropy 都以最多 1024 GPT-2 tokens 评测，保存输出实际长度与截断比例。不要把 T5 native entropy 和旧 GPT-2 entropy直接相减。主表必须列出 native tokenizer、canvas、实际 GPT-2 输出长度；固定 native canvas 的 seconds/sample 是系统比较，不代表相同字节量或相同 GPT-2 tokens 的生成速度。
 
+**2026-09-13：对用户旧 OWT baseline 表的代码核查**
+
+“ELF 指标合理”只说明发布配置的结果量级合理，尚不证明与旧表所有设置完全相同。旧表头写“sequence length=1024、tokenizer=GPT-2”，不适用于 ELF 的生成端。可将 ELF 放入注明差异的公开权重比较表；若表头声称所有方法固定生成 1024 GPT-2 tokens，则必须修改表头/增加 tokenizer 与输出长度列，或建立另外的统一协议结果表。
+
+| 项目 | 当前旧 baseline 路径 | 当前 ELF 路径 | 判断 |
+|---|---|---|---|
+| 生成任务 | OWT 无条件生成 | OWT 无条件生成，不输入 reference/prompt | 任务类型一致 |
+| 样本数、seed | 正式矩阵 1024、42 | 正式 1024、42 | 一致；不同采样器/batch 的随机数流不因此相同 |
+| PPL scorer/tokenizer | 锁定 GPT-2 Large / GPT-2 | 相同锁定版本 | 一致 |
+| PPL 实现 | `compute_gen_ppl`，总 NLL/有效 next-token 数后取 exp，上限1024、右截断 | 同一函数和默认上限 | 评分函数一致，不代表输入文本处理一致 |
+| 生成长度 | 1024 GPT-2 tokens | 1024 T5 tokens | 不一致；统一 scorer 不能将生成长度自动变成相同 |
+| 解码 | FLM/Duo/MDLM 共用 capture 直接 `batch_decode(result)`，没有统一的首 EOS 截断；LangFlow wrapper 使用 `skip_special_tokens=True` | 首 EOS 起清除，再 `skip_special_tokens=True` | 原有不同方法之间也需逐项核实，不把旧表视为已统一 EOS |
+| entropy | 对保存的生成 token IDs 求逐样本自然对数 unigram 熵；OWT 不排除任何 ID，保留 BOS/EOS | 对处理后的文本重新 GPT-2 分词，取前1024，逐样本求同一熵公式 | 单位和公式一致，token 范围/特殊 token 策略不同 |
+| sampler | FLM Euler、gamma=0；Duo ancestral；MDLM DDPM + noise removal 等各自配置 | SDE、logit-normal、SC-CFG=3；8/16 gamma=2，32=1.5，64=1 | 各自采样配置比较，不是同 solver/noise/guidance 的消融 |
+| 计算预算 | 同名 steps 不保证相同 forward 次数/单次成本 | N 步还含一次最终神经网络解码，共 N+1 次 ELF forward | 不能从步数直接推导加速比 |
+| 训练条件 | 各发布 checkpoint / 本地复现 checkpoint | ELF-B OWT 公布权重，T5 表征配置 | 没有控制统一训练预算与表示方式 |
+
+依据：仓库 `evaluation/evaluate.py`、`evaluation/generative_perplexity.py`、`src/dlb/adapters/capture.py`、`adapters/sample_langflow.py`、各模型 adapter，以及 `scripts/run_elf.py` / `scripts/evaluate_elf.py`。它们证明当前代码行为；截图中每组数字具体由哪个历史版本和 checkpoint 产生，仍须其 manifest 才能确认。
+
+数值本身并非明显异常：[ELF 官方发布说明](https://github.com/lillian039/ELF/blob/b29d8833609e9ab7f67cd9da39435ac5cea04837/README.md)给出的 ELF-B 32 步 SDE 参考为 24.1/5.15，本次为 24.3517/5.1651。它支持“发布配置复现量级合理”，不能据此消除上述可比性差异。
+
+对差距的解释应区分证据与假设：
+
+- 旧表 FLM 的少步数点（如2步 PPL=7.74、entropy=0.89）说明很低的 PPL 可以同时伴随高度集中的词频，不能仅按 PPL 排质量。当前 ELF entropy≈5 不属于这种极端低熵表现，但也不是语义多样性或覆盖度的充分证明。
+- ELF 32 步 entropy≈5.165，低于旧表32步的 FLM≈5.72、Duo≈5.57、MDLM≈5.69。引导采样与分布集中可能贡献较低 PPL，需要匹配评测口径和引导消融量化，不能宣称已经证明各因素占比。
+- 8 步 ELF≈70.95/5.25，而截图 FLM 粗体≈449.15/5.21，unigram 熵接近时 PPL 仍差很多，因此也不能把全部提升归结为 entropy 下降。方法/权重/采样器的差异可能带来实际少步数优势，仍需统一评测核验。
+- 原先32步 sanity 的 GPT-2 长度均值约946、最短828、超1024比例0.002；该日志不支持“全靠生成几个简单词获得低 PPL”。这是1000条 sanity 的长度记录，不能替代四个正式格子的长度统计；它也不能量化长度处理对 PPL 差距的贡献。
+- 截图同一格同时有两组数值（如 MDLM 1024步 42.36/5.30 与105.15/5.63），应明确论文/复现/不同配置的来源后选择比较对象。ELF64步不能放入旧表的1024步列。
+
+下一步先从现有 artifacts 做统一文本处理的重评分：明确 BOS、首个非开头 EOS、特殊 token 和 GPT-2 长度上限，保留短/空输出与长度统计，不按得分筛掉样本；对各方法采用同一套函数，将新分数另存。与旧 native-token entropy 并行保留以便追溯。固定长度对照可另做公共 GPT-2 前缀窗口，但不足窗口的样本必须报告，不能默默删除；这属于新的评分协议，不覆盖现有分数。SC-CFG=1 与3的 ELF 32步对照可用于估计引导影响，不能仅凭原生不同方法的分数差归因。当前未实施或声称已得到这些重评分/消融结果；timing 仍暂缓。
+
 ELF 原生采用首个 EOS 截断；旧 baseline 若使用固定完整 canvas，需另外统一 EOS/解码/截断策略后重评估文本，才可作严格 matched-quality 比较。至少画出 PPL–entropy–time 三者的关系，不能只看 PPL 更低就认定质量更好。
 
 **6. OWT conditional：沿用提示文本的零样本扩展**
