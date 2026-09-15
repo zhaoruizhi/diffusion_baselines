@@ -1,11 +1,16 @@
 """Regression tests for all-completion scoring and exact C64 prompt identity."""
 import math
+import io
+from contextlib import redirect_stdout
+from unittest.mock import patch
 from pathlib import Path
 import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+import evaluate_elf_owt_baseline as evaluator
 from evaluate_elf_owt_baseline import c64_records
+from run_elf_remaining import Cell
 from evaluation.conditional_perplexity import compute_conditional_gen_ppl
 
 
@@ -50,6 +55,39 @@ class C64Alignment(unittest.TestCase):
         self.assertEqual(result.sample_count, 2048)
         self.assertEqual(result.valid_token_count, 2048 * 64)
         self.assertAlmostEqual(result.perplexity, 4.0)
+
+    def test_plan_selects_only_requested_steps_without_gpu(self):
+        cells = [Cell('owt-prefix', 'c64-text-t5', s, 1024) for s in (1, 2, 4, 8, 16, 32, 1024)]
+        argv = ['evaluate', '--task', 'owt-prefix', '--steps', '4', '8',
+                '--short-response-policy', 'observed', '--plan']
+        out = io.StringIO()
+        with patch.object(sys, 'argv', argv), patch.object(evaluator, 'manifest', return_value={'assets': {}}), \
+             patch.object(evaluator, 'sha256', return_value='hash'), \
+             patch.object(evaluator, 'build_matrix', return_value=(cells, [])), \
+             patch.object(evaluator, 'reusable_result', return_value=({'run': '/tmp/source'}, [])) as reuse, \
+             patch.object(evaluator, 'require_server') as server, redirect_stdout(out):
+            evaluator.main()
+        self.assertEqual([c.args[1].steps for c in reuse.call_args_list], [4, 8])
+        server.assert_not_called()
+        self.assertIn('2 cells', out.getvalue())
+        self.assertIn('owt-prefix-observed', out.getvalue())
+
+    def test_observed_policy_keeps_short_output_and_weights_actual_tokens(self):
+        tok = Tokenizer()
+        prompts = [{'prompt_id': i, 'prefix_token_ids': [9] * 64,
+                    'reference_token_ids': [4] * 64} for i in range(2)]
+        rows = [{'prompt_id': i, 'completion_id': 0, 'input': tok.decode([9] * 64),
+                 'reference': tok.decode([4] * 64)} for i in range(2)]
+        records = c64_records(rows, prompts, [[2] * 64, [3]], tok, allow_short=True)
+        with self.assertRaisesRegex(ValueError, 'too few'):
+            compute_conditional_gen_ppl(records, Scorer(), tok, tok)
+        result = compute_conditional_gen_ppl(records, Scorer(), tok, tok,
+                                             allow_short_continuations=True)
+        self.assertEqual(result.sample_count, 2)
+        self.assertEqual(result.valid_token_count, 65)
+        self.assertAlmostEqual(result.perplexity, math.exp((64 * math.log(2) + math.log(8)) / 65))
+        with self.assertRaisesRegex(ValueError, 'Short response'):
+            c64_records(rows, prompts, [[2] * 64, []], tok, allow_short=True)
 
     def test_short_response_and_mismatched_prompt_are_not_silently_repaired(self):
         tok = Tokenizer()

@@ -96,6 +96,7 @@ bash scripts/run_one.sh --model flm --dataset lm1b --steps 1 \
 - [ELF：OWT、前缀续写、WMT14/XSum 与服务器 timing 方案](docs/10_elf_server_runbook.md)（独立入口；先用公开权重建立基线）
 - [ELF：GPU 0、1 自动核验并补齐质量实验](docs/15_elf_gpu01_queue.md)（最新执行入口；复用已完成配置）
 - [ELF：32格质量结果归档与GPU 0、1正式timing](docs/16_elf_results_and_timing.md)（质量已完成；当前执行入口）
+- [ELF：条件4步/8步短输出补评分](docs/19_elf_short_response_rescore.md)（只评分两格，保留全部样本，另存最多64-token结果）
 - [ELF：OWT公开权重，对齐旧baseline评分与timing](docs/18_elf_owt_public_baseline.md)（当前执行入口；不训练，复用样本，条件2048条重评分）
 - [ELF：LM1B/OWT四类任务严格对齐方案](docs/17_elf_matched_baseline_plan.md)（历史设计，已停止执行）
 - [ELF：DS210029 数据就绪后的单张 H200 逐步执行清单](docs/11_elf_h200_next_steps.md)

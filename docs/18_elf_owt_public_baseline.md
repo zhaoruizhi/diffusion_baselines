@@ -1,5 +1,7 @@
 # ELF 公开权重：OWT 无条件与 C64 条件续写
 
+**条件4步/8步已有生成但因短输出未通过strict评分时，见[文档19：保留全部样本补评分](19_elf_short_response_rescore.md)。新增observed政策单独保存，不覆盖本文strict结果。**
+
 本页替代文档17的重训方案。用户已明确：只做 OWT，保留公开 ELF-OWT 权重及 T5 tokenizer，不训练。WMT14/XSum 既有结果保留，本次不再运行。
 
 ## 固定实验设置

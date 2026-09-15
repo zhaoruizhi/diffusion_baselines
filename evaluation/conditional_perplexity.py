@@ -129,15 +129,16 @@ def conditional_texts(
     dataset_tokenizer: object,
     *,
     continuation_length: int = 64,
+    allow_short_continuations: bool = False,
 ) -> list[ConditionalText]:
-    """Decode exactly prefix plus the first evaluation continuation tokens."""
+    """Decode the scoring window; short nonempty continuations require explicit opt-in."""
 
     if not records:
         raise ValueError("conditional records must not be empty")
     result: list[ConditionalText] = []
     for index, record in enumerate(records):
         generated = record.continuation_token_ids[:continuation_length]
-        if len(generated) != continuation_length:
+        if not generated or (len(generated) != continuation_length and not allow_short_continuations):
             raise ValueError(f"record {index} has too few generated continuation tokens")
         if len(record.reference_token_ids) != continuation_length:
             raise ValueError(f"record {index} has the wrong reference continuation length")
@@ -170,6 +171,7 @@ def compute_conditional_gen_ppl(
     model_revision: str = "",
     tokenizer_revision: str = "",
     device: str | None = None,
+    allow_short_continuations: bool = False,
 ) -> PPLResult:
     """Score prefix+continuation text while excluding prompt tokens from NLL."""
 
@@ -177,6 +179,7 @@ def compute_conditional_gen_ppl(
         records,
         dataset_tokenizer,
         continuation_length=continuation_length,
+        allow_short_continuations=allow_short_continuations,
     )
     if type(batch_size) is not int or batch_size <= 0:
         raise ValueError("batch_size must be positive")

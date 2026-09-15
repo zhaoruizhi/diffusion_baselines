@@ -24,7 +24,7 @@ class C64Record:
     reference_token_ids: list[int]
 
 
-def c64_records(rows, prompts, tokenized, tokenizer):
+def c64_records(rows, prompts, tokenized, tokenizer, *, allow_short=False):
     by_id = {p['prompt_id']: p for p in prompts}
     records = []
     for row, ids in zip(rows, tokenized, strict=True):
@@ -37,7 +37,7 @@ def c64_records(rows, prompts, tokenized, tokenizer):
             raise ValueError('Saved ELF input differs from canonical C64 prompt')
         if row['reference'] != tokenizer.decode(reference, skip_special_tokens=False):
             raise ValueError('Saved ELF reference differs from canonical C64 reference')
-        if len(ids) < 64:
+        if not ids or (len(ids) < 64 and not allow_short):
             raise ValueError('Short response cannot satisfy the 64-token scoring contract')
         records.append(C64Record(row['prompt_id'], row['completion_id'], prefix, ids[:64], reference))
     return records
@@ -49,18 +49,28 @@ def main():
     parser.add_argument('--task', choices=['owt', 'owt-prefix'], required=True)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--steps', nargs='+', type=int, choices=[1, 2, 4, 8, 16, 32, 1024])
+    parser.add_argument('--short-response-policy', choices=['strict', 'observed'], default='strict',
+                        help='observed: separately report all nonempty responses up to 64 GPT-2 tokens')
     parser.add_argument('--plan', action='store_true')
     args = parser.parse_args()
     if args.batch_size <= 0:
         parser.error('--batch-size must be positive')
+    observed = args.short_response_policy == 'observed'
+    if observed and args.task != 'owt-prefix':
+        parser.error('observed short-response policy is only for owt-prefix')
+    if args.steps and len(args.steps) != len(set(args.steps)):
+        parser.error('duplicate steps')
     root = args.root.resolve()
     sys.path[:0] = [str(root), str(root / 'src')]
-    output = args.output or root / 'results' / f'elf-owt-baseline-eval-{args.task}'
+    output = args.output or root / 'results' / (f'elf-owt-baseline-eval-{args.task}' + ('-observed' if observed else ''))
     assets = manifest(root)['assets']
     asset_hash = sha256(root / 'data/elf/assets.json')
     cells, blocked = build_matrix(root, [args.task])
     if blocked:
         raise ValueError(f'Invalid inputs: {blocked}')
+    if args.steps:
+        cells = [cell for cell in cells if cell.steps in args.steps]
     runs = []
     for cell in cells:
         found, rejected = reusable_result(root, cell, asset_hash, assets)
@@ -91,7 +101,7 @@ def main():
     summary = []
     for cell, path in runs:
         destination = output / f'steps_{cell.steps}' / 'metrics.json'
-        provenance = {'protocol': 'elf_owt_public_baseline_eval_v1', 'task': args.task,
+        provenance = {'protocol': 'elf_owt_public_baseline_observed_v1' if observed else 'elf_owt_public_baseline_eval_v1', 'task': args.task,
                       'steps': cell.steps, 'source_run': str(path),
                       'samples_sha256': sha256(path / 'samples.jsonl'),
                       'generation_manifest_sha256': sha256(path / 'generation.json'),
@@ -99,6 +109,8 @@ def main():
                       'batch_size': args.batch_size,
                       'prompts_sha256': sha256(root / 'data/conditional/owt-c64/prompts.jsonl') if prompts else None}
         cached = json.loads(destination.read_text()) if destination.exists() else {}
+        if cached and cached.get('protocol') != provenance['protocol']:
+            raise ValueError(f'Different protocol already exists at {destination}; use a separate --output')
         if all(cached.get(k) == v for k, v in provenance.items()) and type(cached.get('valid')) is bool:
             result = cached
             print(f'SKIP verified evaluation: {destination}', flush=True)
@@ -108,8 +120,11 @@ def main():
             lengths = list(map(len, ids))
             limit = 64 if prompts else 1024
             short = [row['id'] for row, tokens in zip(rows, ids) if len(tokens) < (64 if prompts else 2)]
+            invalid = [row['id'] for row, tokens in zip(rows, ids) if not tokens] if observed else short
             result = {**provenance, 'sample_count': len(rows), 'prompt_count': 1024,
-                      'metrics': {}, 'valid': not short,
+                      'metrics': {}, 'valid': not invalid,
+                      'short_response_policy': args.short_response_policy,
+                      'invalid_sample_ids': invalid,
                       'length_diagnostics': {'mean': statistics.fmean(lengths), 'min': min(lengths),
                                              'max': max(lengths), 'below_64_count': sum(n < 64 for n in lengths),
                                              'above_1024_count': sum(n > 1024 for n in lengths)},
@@ -117,20 +132,20 @@ def main():
                       'native_tokenizer': 't5-small', 'scoring_tokenizer': 'gpt2',
                       'scoring_limit': limit, 'completion_scope': 'all_saved_completions',
                       'output_policy': 'released ELF EOS-trimmed decoded text; GPT-2 retokenized; no fabricated padding'}
-            if short:
-                result['reason'] = 'Short outputs: cannot score the requested contract; none dropped, padded, or resampled'
+            if invalid:
+                result['reason'] = ('Empty outputs' if observed else 'Short outputs') + ': cannot score the requested contract; none dropped, padded, or resampled'
             else:
                 sliced = [tokens[:limit] for tokens in ids]
                 result['metrics']['entropy_gpt2_nats'] = statistics.fmean(unigram_entropy(tokens) for tokens in sliced)
-                records = c64_records(rows, prompts, ids, tok) if prompts else None
+                records = c64_records(rows, prompts, ids, tok, allow_short=observed) if prompts else None
                 if model is None:
                     model = AutoModelForCausalLM.from_pretrained(str(asset(root, 'gpt2-large')), local_files_only=True).cuda().eval()
                 kwargs = dict(batch_size=args.batch_size, device='cuda',
                               model_revision=assets['gpt2-large']['revision'], tokenizer_revision=assets['gpt2']['revision'])
                 if prompts:
-                    ppl = compute_conditional_gen_ppl(records, model, tok, tok, **kwargs)
+                    ppl = compute_conditional_gen_ppl(records, model, tok, tok, allow_short_continuations=observed, **kwargs)
                     result['metrics']['conditional_ppl'] = asdict(ppl)
-                    texts = conditional_texts(records, tok)
+                    texts = conditional_texts(records, tok, allow_short_continuations=observed)
                     result['metrics']['grouped_self_bleu'] = _gpt2_tokenized_self_bleu(records, [t.generated_suffix for t in texts], tok)
                     result['ppl_policy'] = 'existing compute_conditional_gen_ppl; canonical prefix IDs; decode joined IDs then retokenize; prompt loss excluded'
                 else:
@@ -141,16 +156,17 @@ def main():
             write_json(destination, result)
         metrics = result['metrics']
         ppl = metrics.get('conditional_ppl', metrics.get('generative_ppl', {})).get('perplexity')
-        summary.append({'task': args.task, 'steps': cell.steps, 'sample_count': result['sample_count'],
+        summary.append({'task': args.task, 'steps': cell.steps, 'protocol': result['protocol'], 'sample_count': result['sample_count'],
                         'valid': result['valid'], 'ppl': ppl, 'entropy': metrics.get('entropy_gpt2_nats'),
                         'short_count': len(result['short_sample_ids']), 'metrics_path': str(destination)})
         print(json.dumps(summary[-1]), flush=True)
     output.mkdir(parents=True, exist_ok=True)
-    with (output / 'summary.csv').open('w') as handle:
+    summary_name = 'summary' + ('-steps-' + '-'.join(str(c.steps) for c, _ in runs) if args.steps else '') + '.csv'
+    with (output / summary_name).open('w') as handle:
         writer = csv.DictWriter(handle, fieldnames=list(summary[0]))
         writer.writeheader()
         writer.writerows(summary)
-    print(f'SUMMARY: {output / "summary.csv"}', flush=True)
+    print(f'SUMMARY: {output / summary_name}', flush=True)
     if any(not row['valid'] for row in summary):
         raise SystemExit(2)
 
