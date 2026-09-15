@@ -1,5 +1,7 @@
 # ELF 加入 baseline：服务器实验方案与操作步骤
 
+**当前执行入口：[OWT公开权重、无训练、对齐旧baseline评分与timing](18_elf_owt_public_baseline.md)。只做OWT无条件和条件续写；保留T5。条件评分改为旧代码实际使用的全部2048条completion，复用既有样本重评分。以下状态及文档17重训路线属于历史记录，以文档18为准。**
+
 **2026-09-14对齐要求：[LM1B/OWT四类任务的严格对齐方案](17_elf_matched_baseline_plan.md)。用户已确认以本地代码为准：条件任务均评分64-token response，OWT内部canvas为1024，不是64+512协议。既有ELF公开权重实验是原生参考，不等同于补齐LM1B/OWT严格对齐。**
 
 **最新状态：32/32格质量实验已完成，用户已授权正式timing。结果表和GPU0/1计时命令见[文档16](16_elf_results_and_timing.md)。不再启动质量生成。下面的“timing暂缓”及缺失项是历史记录，当前执行以文档16为准。**
